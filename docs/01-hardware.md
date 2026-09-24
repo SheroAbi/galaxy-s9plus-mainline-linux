@@ -24,7 +24,7 @@ this applies to it).
 
 The **S2MPS18** PMIC is not on a bus the kernel can reach directly. It sits
 behind the APM firmware and is spoken to over the ACPM mailbox on channel 2.
-`device/rootfs/usr/local/sbin/s9p-acpm` implements that protocol from
+`s9p-acpm` (in [`extras/debug-tools`](../extras/debug-tools/)) implements that protocol from
 userspace through `/dev/mem`, and `src/soc/s9p-acpm.c` does the same in the
 kernel.
 

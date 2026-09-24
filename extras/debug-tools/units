@@ -1,0 +1,3 @@
+# not enabled automatically: s9p-testrun.service reboots into TWRP when the
+# kernel command line asks for it, s9p-governor.service is the old userspace
+# governor and competes with the in-kernel drivers.

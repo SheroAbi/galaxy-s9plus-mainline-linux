@@ -39,19 +39,21 @@ while idle (M3 at 400 MHz / 700 mV, a step no load test covered); their
 validation ran 30-120 s. Kernels built before this change default to on,
 so `s9p-stability.service` writes `N` to both at every boot.
 
-`s9p-blackbox.service` writes every kernel message and a state line per
-minute (clocks, rail, temperatures, Wi-Fi) to `/var/log/s9p-blackbox.log`,
-fsync'ed. The journal does not keep kernel messages of a boot that hung, so
-after the next freeze this file is where the last minute is.
+The optional flight recorder ([`extras/flight-recorder`](../extras/flight-recorder/))
+writes every kernel message and a state line per minute (clocks, rail,
+temperatures, Wi-Fi) to `/var/log/s9p-blackbox.log`, fsync'ed. The journal
+does not keep kernel messages of a boot that hung, so after a freeze that
+file is where the last minute is.
 
 ## Wi-Fi drops and never comes back
 
 A failed group rekey (`EAPOL-Key Replay Counter did not increase`) makes
 NetworkManager ask for a new password; with no secret agent it ends in
-`no-secrets` and never retries. `s9p-wifi-guard.service` reconnects after a
-minute. The profile is pinned to 2.4 GHz (`band bg`): at the desk the
-router's 5 GHz radio arrives at -82 dBm, 2.4 GHz at -57 dBm. Power save is
-off in both NetworkManager and `s9p-power balanced`.
+`no-secrets` and never retries. `s9p-wifi-guard.service` (part of the image)
+reconnects after a minute. Wi-Fi power save is off in NetworkManager. Where
+the 5 GHz signal is weak, pinning the connection to 2.4 GHz (`nmcli connection
+modify <name> 802-11-wireless.band bg`) made the reference phone's link far
+more stable.
 
 ## No suspend
 

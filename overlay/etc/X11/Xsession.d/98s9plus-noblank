@@ -1,2 +1,0 @@
-# Keep the panel lit: DPMS cannot wake it back up on its own.
-xset s off -dpms 2>/dev/null || true

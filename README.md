@@ -3,10 +3,21 @@
 This is a Samsung Galaxy S9+ from 2018 that runs a real, current Linux: the
 mainline kernel 7.1 and an ordinary Ubuntu 24.04 with GNOME on Wayland. There
 is no Android underneath, no Halium, no container and no vendor Android
-drivers doing the work behind the scenes. The desktop is drawn by the phone's own Mali GPU
-through the open-source Panfrost driver, the screen is driven by a display
-driver written for this project, and the system lives on the phone's internal
-storage like on any other computer.
+drivers doing the work behind the scenes. The desktop is drawn by the phone's
+own Mali GPU through the open-source Panfrost driver, the screen is driven by
+a display driver written for this project, and the system lives on the
+phone's internal storage like on any other computer.
+
+Why would you want that? Because an old flagship in a drawer is a small,
+quiet, eight-core ARM64 computer with 6 GB of RAM, fast storage, Wi-Fi and a
+built-in battery that bridges power cuts. Many people rent a VPS to run a
+self-hosted AI agent, a bot, a home automation hub or a small web service.
+This phone can be that machine instead: it sits on your desk, it costs
+nothing per month, it draws a few watts, and your data stays at home. You
+reach it over SSH like any server, and it still has a touchscreen and a full
+desktop when you want to look at it. This repository shows, step by step,
+how to turn such a device into your own Linux machine, and the same way of
+working carries over to other old phones.
 
 What makes this phone hard is its chip. The Exynos 9810 is Samsung's own
 design, and mainline Linux knows almost nothing about it: when this project
@@ -21,10 +32,20 @@ It works now. The phone boots with all eight cores, mounts its Ubuntu root
 filesystem from the internal UFS storage, shows GNOME at the panel's full
 1440x2960 resolution at 60 frames per second, reacts to touch, connects to
 Wi-Fi, reports its battery and charging state, and can be reached over the
-USB cable as a network device and as a serial console. The CPU and GPU change
-their clock speed with the load and throttle themselves before they get too
-hot, and a hardware watchdog turns any hang into a reboot instead of a dead
-phone.
+USB cable as a network device and as a serial console. The CPU and GPU
+change their clock speed with the load and throttle themselves before they
+get too hot, and a hardware watchdog turns any hang into a reboot instead of
+a dead phone.
+
+You build the system yourself, from this repository and public sources
+only. The build produces a clean, ordinary Ubuntu: the same base system as
+the two sister projects for the Mi 9T and the Redmi 8, plus only the few
+files this phone's hardware needs. Nothing of ours is preinstalled. The
+extra features we built for our own use (power profiles, a flight recorder
+for debugging hangs, apt through the USB cable, the bring-up tools) are kept
+separate and marked as extras; you install them only if you want them. The
+image has no default password: you choose one when you build it, root is
+locked, and every phone creates its own SSH keys on its first boot.
 
 Some of the problems on the way were the kind that cost days. A mainline
 kernel did simply nothing, no message, no error, because Samsung's 2018
@@ -33,8 +54,8 @@ filling years ago, and then overwrites the first bytes of it. The graphics
 core faulted randomly until it turned out the bootloader leaves its supply
 voltage far too low. A mailbox to the power-management firmware seemed to
 work but never answered, because two ring buffers were swapped. Icons showed
-tiny stripes that were finally traced to a texture compression feature in the
-graphics driver. All of that is written down here in detail.
+tiny stripes that were finally traced to a texture compression feature in
+the graphics driver. All of that is written down here in detail.
 
 Being honest about the limits matters. The processor cores cannot enter
 their deeper idle states yet, which costs battery. The phone cannot suspend
@@ -44,10 +65,8 @@ a working Linux machine, not a finished phone.
 
 This repository is for anyone who owns a Galaxy S9+ (the Exynos model,
 SM-G965F) and wants to run Linux on it, and for anyone porting mainline Linux
-to another Exynos device: the drivers, the device tree, the build and install
-tools and a full record of what worked and what did not are all here. The
-Snapdragon version of the phone (SM-G965U) is a different device, and
-nothing here applies to it.
+to another Exynos device. The Snapdragon version of the phone (SM-G965U) is
+a different device, and nothing here applies to it.
 
 ---
 
@@ -134,7 +153,53 @@ How each was measured: [docs/05-performance.md](docs/05-performance.md) and
 | Phone discharges on a PC port | TWRP resets the MAX77705, input limit 375 mA | restored to 500 mA at boot |
 | The watchdog never fired | S-Boot sets `MASK_WDT_RESET_REQUEST` in the PMU | cleared from the device tree (`s9p-clkgate`) |
 | Early boot died before any console | 52-bit VA/PA fallback runs before a console exists; the M3 lacks LVA/LPA2 | 48-bit VA and PA |
-| Rare hard hangs on an idle desktop | idle-only voltage reductions on CPU and GPU | both off by default, a flight recorder logs the last minute |
+| Rare hard hangs on an idle desktop | idle-only voltage reductions on CPU and GPU | both off by default; an optional flight recorder logs the last minute |
+
+### Build your own system
+
+Everything is built from this repository and public sources; no image is
+downloaded from us. You need the phone with an unlocked bootloader and TWRP
+3.3.1-0 on `RECOVERY`, a Linux build host (Ubuntu 24.04, a VM or WSL2
+works), an aarch64 cross toolchain and `adb`.
+
+```bash
+# 1. the kernel (one-time setup, then the validated configuration)
+scripts/build/setup_build.sh && scripts/build/toolchain.sh && scripts/build/fetch_mainline.sh
+scripts/build/build_stable.sh
+TWRP_IMG=/path/to/twrp-3.3.1-0-star2lte.img \
+    scripts/build/pack_uniloader.sh dist/m71-<stamp> boot-s9plus.img
+
+# 2. the Ubuntu root filesystem: asks for your password
+sudo image/build-image.sh
+
+# 3. flash from TWRP (the scripts check the device and read everything back)
+python scripts/flash/flash_s9plus_rootfs_adb.py dist/image/s9plus-rootfs.img
+python scripts/flash/flash_s9plus_boot_adb.py dist/uniloader/boot-s9plus.img
+```
+
+What the image contains: the common base system of all three phone projects
+([`image/common/README.md`](image/common/README.md): Ubuntu 24.04, GNOME,
+Firefox, SSH, no default password, root locked, SSH keys made on the phone),
+plus this phone's hardware layer in [`device/`](device/). Do not flash the
+raw `m71-<stamp>/boot.img`: a direct boot without uniLoader fails early.
+Details: [docs/02-building.md](docs/02-building.md),
+[docs/03-installing.md](docs/03-installing.md).
+
+### Extras (optional, never installed by the image build)
+
+On the phone, from a checkout of this repository:
+
+```bash
+sudo extras/install.sh                    # list them
+sudo extras/install.sh power-profiles     # install one; --remove takes it out again
+```
+
+| Extra | What it does |
+|---|---|
+| [power-profiles](extras/power-profiles/) | CPU/GPU ceilings and Wi-Fi power save as three profiles, following GNOME's power mode |
+| [flight-recorder](extras/flight-recorder/) | every kernel message and a state line per minute, fsync'ed, for hunting hangs |
+| [usb-apt-proxy](extras/usb-apt-proxy/) | apt through a proxy on the PC the phone is cabled to |
+| [debug-tools](extras/debug-tools/) | the register, PMIC and clock tools from the bring-up |
 
 ### Repository layout
 
@@ -150,54 +215,25 @@ src/                 the drivers this port adds to the mainline tree
   mainline-dts/      the board device tree
   reference/         pinned upstream file the build checks against
 bootloader/uniLoader/  the shim that starts a mainline kernel on this S-Boot
+image/               build the Ubuntu root filesystem (common/ is shared by all three phones)
+device/              initramfs init scripts, and the hardware layer of the image (base/)
+extras/              optional features, installed on request
 scripts/
   build/             build the kernel and the boot image (env.sh: locations)
-  image/             build and refresh the Ubuntu rootfs image
   flash/             write boot and rootfs to the phone from TWRP
-device/              initramfs init scripts and the rootfs files of the port
-overlay/             configuration merged into the rootfs at build time
 firmware/            BCM4361 firmware and the wireless regulatory database
 branding/            boot logo
 docs/                everything above in detail
 ```
 
-`dist/` is where builds land; it is ignored by git. Set `DIST=` to put builds
-somewhere else.
-
-### Building and installing
-
-You need the phone with an unlocked bootloader and TWRP 3.3.1-0 on
-`RECOVERY`, a Linux build host (WSL works), an aarch64 cross toolchain and
-`adb`.
-
-```bash
-# one-time: build area, toolchain, mainline tree (see scripts/build/env.sh)
-scripts/build/setup_build.sh
-scripts/build/toolchain.sh
-scripts/build/fetch_mainline.sh
-
-# build the kernel in the validated configuration
-scripts/build/build_stable.sh
-
-# wrap it in uniLoader: the bootable image
-TWRP_IMG=/path/to/twrp-3.3.1-0-star2lte.img \
-    scripts/build/pack_uniloader.sh dist/m71-<stamp> boot-s9plus.img
-
-# write BOOT from TWRP (checks the device, reads back, leaves RECOVERY alone)
-python scripts/flash/flash_s9plus_boot_adb.py dist/uniloader/boot-s9plus.img
-```
-
-Do not flash the raw `m71-<stamp>/boot.img`: a direct boot without uniLoader
-fails early. First boot, accounts (`ubuntu` / `1234` — change them), the
-rootfs and recovery: [docs/03-installing.md](docs/03-installing.md). Every
-build switch: [docs/02-building.md](docs/02-building.md).
+`dist/` is where builds land; it is ignored by git.
 
 ### Documentation
 
 | | |
 |---|---|
 | [01-hardware.md](docs/01-hardware.md) | the SoC, what sits on which bus, and the addresses that matter |
-| [02-building.md](docs/02-building.md) | build host, toolchain, every build switch |
+| [02-building.md](docs/02-building.md) | build host, toolchain, every build switch, the image |
 | [03-installing.md](docs/03-installing.md) | partitions, TWRP, flashing, first boot |
 | [04-drivers.md](docs/04-drivers.md) | each driver, why it exists, how it works |
 | [05-performance.md](docs/05-performance.md) | the display path, the GPU, thermals, and how each was measured |

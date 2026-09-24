@@ -1,0 +1,3 @@
+# Defaults for a phone: the on-screen keyboard is on.
+[org/gnome/desktop/a11y/applications]
+screen-keyboard-enabled=true

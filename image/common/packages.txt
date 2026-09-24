@@ -1,0 +1,79 @@
+# The common package set: identical on every phone. Installed with
+# --no-install-recommends, so nothing comes in that is not listed here or
+# pulled in as a hard dependency.
+
+# base system
+systemd-sysv
+systemd-resolved
+systemd-timesyncd
+systemd-zram-generator
+dbus
+udev
+kmod
+sudo
+locales
+tzdata
+ca-certificates
+gpg
+python3
+nano
+less
+htop
+curl
+wget
+rsync
+bash-completion
+usbutils
+pciutils
+iproute2
+iputils-ping
+e2fsprogs
+dosfstools
+cloud-guest-utils
+fdisk
+zstd
+
+# network
+network-manager
+wpasupplicant
+wireless-regdb
+iw
+rfkill
+openssh-server
+bluez
+
+# desktop: Ubuntu's GNOME without the snap-based ubuntu-desktop metapackage
+gdm3
+gnome-shell
+gnome-session
+ubuntu-session
+gnome-control-center
+gnome-terminal
+nautilus
+gnome-text-editor
+gnome-system-monitor
+gnome-tweaks
+gnome-shell-extension-prefs
+gnome-shell-extension-ubuntu-dock
+gnome-shell-extension-appindicator
+xdg-desktop-portal-gnome
+xwayland
+yaru-theme-gnome-shell
+yaru-theme-gtk
+yaru-theme-icon
+yaru-theme-sound
+adwaita-icon-theme
+fonts-ubuntu
+gnome-backgrounds
+dconf-cli
+mesa-utils
+libgl1-mesa-dri
+pipewire
+pipewire-pulse
+wireplumber
+upower
+
+# browser: Mozilla's own APT build (see rootfs/etc/apt); Ubuntu's firefox
+# package is a snap, and snaps need squashfs, which these kernels do not
+# enable at boot
+firefox

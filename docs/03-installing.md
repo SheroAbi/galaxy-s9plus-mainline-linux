@@ -26,17 +26,31 @@ give it internet (USB tethering works), and leave it online. Knox Guard went
 to `Checking` and the bootloader started accepting writes. The seven days
 Samsung nominally wants were not needed.
 
+## What you flash
+
+Two pieces, both built from this repository ([02-building.md](02-building.md)):
+
+| Partition | Image | Built by |
+|---|---|---|
+| `BOOT` (`/dev/block/sda10`) | `dist/uniloader/<name>.img` — uniLoader + kernel + device tree | `scripts/build/build_stable.sh` + `pack_uniloader.sh` |
+| `USERDATA` (`/dev/block/sda25`) | `dist/image/s9plus-rootfs.img` — the Ubuntu root filesystem | `image/build-image.sh` |
+
+`RECOVERY` keeps TWRP. **Flashing USERDATA replaces all Android user data.**
+
 ## Flashing
 
 Everything after the initial TWRP install goes over **TWRP + adb**, not Odin.
+Boot the phone into TWRP (Power + Volume-Up + Bixby), cable in:
 
 ```bash
-# kernel only: the uniLoader-wrapped image (a raw m71-*/boot.img does not boot)
-python scripts/flash/flash_s9plus_boot_adb.py dist/uniloader/<image>.img
+# the root filesystem (resumable, every chunk checked, then read back whole)
+python scripts/flash/flash_s9plus_rootfs_adb.py dist/image/s9plus-rootfs.img
 
-# the Ubuntu rootfs (raw ext4 image, resumable, every chunk checked)
-python scripts/flash/flash_s9plus_rootfs_adb.py <path>/ubuntu-rootfs.img
+# the kernel: the uniLoader-wrapped image (a raw m71-*/boot.img does not boot)
+python scripts/flash/flash_s9plus_boot_adb.py dist/uniloader/<name>.img
 ```
+
+The boot script reboots when BOOT reads back correctly.
 
 > TWRP's `adbd` accepts `exec-in` but **discards the stream**. The rootfs
 > therefore goes over `adb push` in 128 MiB chunks into `/tmp` and is written
@@ -44,13 +58,11 @@ python scripts/flash/flash_s9plus_rootfs_adb.py <path>/ubuntu-rootfs.img
 > the whole run idempotent and resumable — which matters, because the Windows
 > adb server reliably drops out during long transfers.
 
-Target partitions: `BOOT` = `/dev/block/sda10`, `USERDATA` = `/dev/block/sda25`.
-
 ### Odin, if you ever need it
 
-`TWRP_IMG=<twrp image> scripts/image/mk_twrp_tar.sh` builds the smallest
-possible Odin package: TWRP for `RECOVERY` only. That is the one write that matters, because sboot
-keeps the recovery flag it was once given.
+`TWRP_IMG=<twrp image> scripts/flash/mk_twrp_tar.sh` builds the smallest
+possible Odin package: TWRP for `RECOVERY` only. That is the one write that
+matters, because sboot keeps the recovery flag it was once given.
 
 Odin-path traps that cost time:
 
@@ -65,49 +77,53 @@ Odin-path traps that cost time:
 
 ## First boot
 
-* GDM logs `ubuntu` in automatically, Wayland session.
-* Accounts: `ubuntu` / `1234`, root `1234` — **change them.**
-* Over USB the phone is `172.16.42.1` and serves DHCP to the host:
-  `ssh ubuntu@172.16.42.1`.
-* A `getty` runs on `ttyGS0`, so the same cable also gives a serial console on
-  a host COM port.
+* The root filesystem grows to the whole of USERDATA and the phone creates
+  its own SSH host keys; then GDM logs your user in, GNOME on Wayland.
+* The user and password are the ones you gave the image build; root is
+  locked (use `sudo`), and root can never log in over SSH.
+* **USB network:** the phone takes `172.16.42.2` (and also asks for DHCP). Give
+  the PC's new USB network adapter the address `172.16.42.1/24`, then
+  `ssh <user>@172.16.42.2`. The link is only between the phone and that PC.
+* The same cable is also a serial console (a `getty` on `ttyGS0`, a COM port on
+  the PC).
+* Wi-Fi: from the GNOME menu, like on any laptop.
 
-## Device-side configuration
+## What the image adds for this phone
 
-`device/rootfs/` is the part of the Ubuntu install that belongs to this port.
-Copy it over the rootfs and enable the units you want with `systemctl enable`
-(`s9p-touch-power.service` is the one every install needs).
-
-`device/s9-setup.sh` is the one-shot provisioning run that joins Wi-Fi, sets
-the clock and installs the GNOME desktop with GDM on Wayland. It takes the
-network credentials from the environment, never from the file:
-
-    WIFI_SSID='my-network' WIFI_PSK='...' ./s9-setup.sh
-
-`WIFI_HIDDEN` defaults to `yes`. Follow `/root/s9-setup.log`, not the serial
-console — the script detaches.
+`device/base/` is everything the image carries on top of the common base
+system ([`image/common/README.md`](../image/common/README.md)), and
+`device/configure.sh` enables it. Only what the hardware needs:
 
 | | |
 |---|---|
-| `usr/local/sbin/s9p-touch-power` | lifts the charger input limit from 375 mA (what TWRP leaves) to 500 mA. The touch rails (LDO35/LDO43) and BUCK6 for the GPU are set by the kernel now (`s9p-acpm`, `s9p-g3d`) |
-| `usr/local/sbin/s9p-acpm` | speaks the ACPM mailbox protocol from userspace (`read`/`write`/`update`/`tsp`) |
-| `usr/local/sbin/s9p-cpuclk` | sets the vendor clock maxima |
-| `usr/local/sbin/s9p-governor` | userspace GPU steps and thermal CPU caps (from before the in-kernel drivers; optional) |
-| `usr/local/sbin/s9p-wlan` | brings the BCM4361 up |
-| `etc/gdm3/custom.conf` | `WaylandEnable=true` plus autologin |
-| `etc/systemd/system.conf.d/s9p-watchdog.conf` | `RuntimeWatchdogSec=30s`, `RebootWatchdogSec=2min` |
+| `usb-gadget` + `usb-gadget.service` | USB serial console (ACM) and network (NCM, ECM/RNDIS as fallbacks) |
+| `NetworkManager/…/usb0.nmconnection` | the phone's side of the USB network |
+| `s9p-touch-power` + service | lifts the charger input limit from 375 mA (what TWRP leaves) to 500 mA. The touch rails and the GPU rail are set by the kernel (`s9p-acpm`, `s9p-g3d`) |
+| `s9p-stability` + service | keeps the idle-only voltage reductions off (see [06-known-issues.md](06-known-issues.md)) |
+| `s9p-wifi-guard` + service | brings Wi-Fi back after NetworkManager gave up on a failed rekey |
+| `hciattach-bcm4361.service` + `brcm/bcm4361B2_semco.hcd` | attaches the Bluetooth controller |
+| `brcm/brcmfmac4361-pcie.*` | Wi-Fi firmware on disk too (the stable kernel has it built in) |
+| `logind.conf.d`, `sleep.conf.d`, masked sleep targets | no suspend: the big cores do not come back from it |
+| `system.conf.d/s9p-watchdog.conf` | systemd feeds the hardware watchdog (`RuntimeWatchdogSec=30s`) |
+| `gdm.service.d/10-wait-for-render-node.conf` | GDM waits for the GPU's render node |
+| `PAN_MAX_AFBC_PACKING_RATIO=0` in `/etc/environment` | Mesa texture fix, see below |
+
+Everything else — power profiles, the flight recorder, the apt proxy over
+USB, the bring-up tools — is in [`extras/`](../extras/) and only installed
+when you ask for it.
 
 Two userland settings that are easy to get wrong:
 
-* **`PAN_MAX_AFBC_PACKING_RATIO=0` must be in `/etc/environment`** (`s9-setup.sh` adds it). Without it
-  icons and glyphs show 16-pixel horizontal dashes. `/etc/environment.d/` does
-  **not** reach `gnome-shell`; `/etc/environment` (pam_env) does.
+* **`PAN_MAX_AFBC_PACKING_RATIO=0` must be in `/etc/environment`** (the image
+  build adds it). Without it icons and glyphs show 16-pixel horizontal
+  dashes. `/etc/environment.d/` does **not** reach `gnome-shell`;
+  `/etc/environment` (pam_env) does.
 * **`LIBGL_ALWAYS_SOFTWARE=1` must not be anywhere** (`/etc/environment`,
-  `gdm3.service.d`) or every client silently gets llvmpipe. The `ubuntu` user
-  must be in the `render` group.
+  `gdm3.service.d`) or every client silently gets llvmpipe. The user must be
+  in the `render` group (the image build does that).
 
 > When you change either and want to measure the result, run
-> `loginctl terminate-user ubuntu` before restarting GDM. The `systemd --user`
+> `loginctl terminate-user <user>` before restarting GDM. The `systemd --user`
 > manager keeps its environment across `systemctl restart gdm`, and a stale
 > value has survived three measurements that way.
 
@@ -120,7 +136,7 @@ Two userland settings that are easy to get wrong:
    TWRP; the kernel's console zone is at `0x4000` of `0x8000@0xfed10000` and
    TWRP shows it as `pmsg-ramoops-0`. Read the **end** of it.
 3. **Serial console, rescue shell** → kernel is fine, the rootfs is missing or
-   broken. Reflash `userdata.img`.
+   broken. Reflash `s9plus-rootfs.img`.
 
 The kernel's init arms Samsung's recovery magic in the PMU before it does
 anything else (`INFORM2 = 0x12345678`, `INFORM3 = 0x12345674`), so a panic,

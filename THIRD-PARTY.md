@@ -7,7 +7,7 @@
 | MAX77705 charger driver | `src/soc/max77705_charger.c` | mainline Linux v7.1 (Dzmitry Sankouski), with this port's `charge_behaviour` addition | GPL-2.0 |
 | Pinned upstream copy of that driver | `src/reference/max77705_charger.c` | torvalds/linux v7.1, unmodified | GPL-2.0 |
 | `exynos-bootfb.c` | generated at build time | `drivers/gpu/drm/sysfb/simpledrm.c` from the kernel tree being built, with `DRIVER_NAME` renamed | GPL-2.0 |
-| BCM4361 firmware, NVRAM, CLM blob, Bluetooth patchram | `firmware/`, `device/rootfs/lib/firmware/brcm/` | Samsung SM-G965F stock firmware | Broadcom, redistributed as shipped on the device; not GPL |
+| BCM4361 firmware, NVRAM, CLM blob, Bluetooth patchram | `firmware/`, `device/base/lib/firmware/brcm/` | Samsung SM-G965F stock firmware | Broadcom, redistributed as shipped on the device; not GPL |
 | `regulatory.db`, `regulatory.db.p7s` | `firmware/` | `wireless-regdb` | ISC |
 | TWRP 3.3.1-0 for star2lte | not in this repository | https://twrp.me | its own terms |
 | Boot logo | `branding/shero_logo.ppm` | this project (`scripts/build/make_logo.py`) | GPL-2.0 |

@@ -1,0 +1,11 @@
+[Unit]
+Description=Grow the root filesystem to its whole partition (first boot)
+ConditionPathExists=!/var/lib/grow-rootfs.done
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/grow-rootfs
+
+[Install]
+WantedBy=multi-user.target

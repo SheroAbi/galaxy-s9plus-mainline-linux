@@ -163,21 +163,25 @@ arm64 `defconfig` produces a 54 MB `Image` — a distro kernel for four dozen
 SoC families. The config here strips it to about 21 MB by turning off every
 other `ARCH_*` and the subsystems this phone does not have.
 
-## Building the rootfs
-
-Only needed for a fresh install; an existing `USERDATA` is untouched by kernel
-builds.
+## Building the root filesystem
 
 ```bash
-scripts/image/rootfs_stage1.sh          # debootstrap noble arm64
-scripts/image/rootfs_stage2.sh          # packages, users, overlay/, services
-scripts/image/mk_images.sh              # pack it as a sparse ext4 userdata.img
-scripts/image/verify_images.sh          # check the sparse header and geometry
-scripts/image/refresh_native_rootfs.sh  # re-apply overlay/ to an existing image
+sudo image/build-image.sh
 ```
 
-`rootfs_stage2.sh` builds the base system (an Xfce session on the
-framebuffer, the state before the KMS driver existed). The GNOME desktop that
-runs today is installed on the phone itself by `device/s9-setup.sh`, see
-[03-installing.md](03-installing.md). `ROOT_PASSWORD`, `USER_PASSWORD` and
-`TIMEZONE` set the initial accounts and time zone.
+Builds the Ubuntu 24.04 root filesystem from scratch: debootstrap, the common
+package set and settings of all three phone projects
+([`image/common/README.md`](../image/common/README.md)), then this phone's
+hardware layer (`device/base/`, `device/configure.sh`). It asks for the
+password of the user it creates; user name, time zone, locale, keyboard and
+an SSH key are environment variables described there.
+
+Output: `dist/image/s9plus-rootfs.img` (raw ext4, grows to the whole of
+USERDATA on the first boot) and `SHA256SUMS`. The image needs no kernel
+modules — the stable kernel has every driver built in — so kernel and root
+filesystem can be rebuilt independently.
+
+Build host: Ubuntu 24.04 as root (WSL2 works), with
+`debootstrap qemu-user-static binfmt-support e2fsprogs openssl python3 curl
+git`. The work directory (`WORK`, default `/var/tmp/s9plus-image`) must be
+on a Linux filesystem.

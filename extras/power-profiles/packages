@@ -1,0 +1,2 @@
+# optional: GNOME's power mode switch follows the profile when this runs
+power-profiles-daemon

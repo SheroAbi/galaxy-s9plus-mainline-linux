@@ -142,7 +142,7 @@ going up, clock before voltage coming down.
 
 The S2MPS18 PMIC is only reachable through the APM firmware's mailbox. This
 driver implements that protocol in the kernel; `s9p-acpm` in
-`device/rootfs/usr/local/sbin/` implements the same thing from userspace
+`extras/debug-tools/` implements the same thing from userspace
 through `/dev/mem` for diagnosis.
 
 Only 32-bit accesses work, and the first three SRAM pages fault when mapped.

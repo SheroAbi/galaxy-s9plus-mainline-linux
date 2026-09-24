@@ -1,8 +1,0 @@
-[User]
-Session=ubuntu
-XSession=ubuntu
-Icon=/home/ubuntu/.face
-SystemAccount=false
-
-[InputSource0]
-xkb=us

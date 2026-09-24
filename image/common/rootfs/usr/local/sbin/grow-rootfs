@@ -1,0 +1,19 @@
+#!/bin/sh
+# First boot: the image is only as large as its content; grow the root
+# filesystem to fill its partition. When root sits in a partition of a disk
+# image on a loop device (Redmi 8: the image lives on userdata), that
+# partition is grown to the end of the loop device first.
+set -eu
+src=$(findmnt -no SOURCE /)
+case "$src" in
+/dev/loop*p[0-9]*)
+	disk=${src%p*}
+	part=${src##*p}
+	# growpart exits 1 when there is nothing to grow
+	growpart "$disk" "$part" || [ $? -eq 1 ]
+	partx -u "$disk" || true
+	;;
+esac
+resize2fs "$src"
+mkdir -p /var/lib
+touch /var/lib/grow-rootfs.done
