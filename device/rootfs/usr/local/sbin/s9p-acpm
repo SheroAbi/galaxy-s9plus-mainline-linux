@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Talk to the APM firmware (ACPM) of the Exynos 9810 through /dev/mem.
+
+The S2MPS18 main PMIC hangs off the APM's "speedy" bus, so the AP reaches its
+registers only by asking the APM firmware: a 4-word command goes into a
+shared-SRAM queue, the mailbox at 0x14100000 raises the APM's interrupt, the
+answer comes back in the mirror queue. Protocol as in the vendor kernel's
+acpm_ipc.c / acpm_mfd.c (Samsung 4.9), channel 2 is the MFD channel.
+
+    s9p-acpm info                   # framework and channel table
+    s9p-acpm read  <type> <reg>     # type 1 = PMIC block of the S2MPS18
+    s9p-acpm write <type> <reg> <val>
+    s9p-acpm update <type> <reg> <val> <mask>
+    s9p-acpm tsp on|off             # LDO35 (tsp_io) and LDO43 (tsp_avdd)
+    s9p-acpm dvfs big|little|gpu|mif [kHz]   # ACPM DVFS get/set (firmware applies ASV voltage)
+    s9p-acpm ipc <ch> w0 w1 w2 w3   # raw message
+"""
+import ctypes
+import mmap
+import os
+import sys
+import time
+
+MBOX = 0x14100000
+SRAM = 0x02039000
+SRAM_SIZE = 0x30000
+INITDATA = 0x7f00
+INTGR0, INTCR0, INTMR0, INTSR0 = 0x08, 0x0c, 0x10, 0x14
+INTGR1, INTCR1, INTMR1, INTSR1 = 0x1c, 0x20, 0x24, 0x28
+SEQ_SHIFT = 16
+
+FUNC_READ, FUNC_WRITE, FUNC_UPDATE = 0, 1, 2
+PMIC = 1
+L35CTRL, L43CTRL = 0x6c, 0x74
+
+# Device memory: only aligned 32-bit accesses are allowed. Python's mmap/struct
+# helpers copy byte-wise and take a bus error, so every access goes through
+# ctypes on the mapped address. Note the first three SRAM pages fault when
+# mapped from userspace, everything the protocol needs lies above 0x3000.
+fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
+_mbox = mmap.mmap(fd, 0x1000, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=MBOX)
+_sram = mmap.mmap(fd, SRAM_SIZE, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=SRAM)
+mbox = ctypes.addressof(ctypes.c_uint32.from_buffer(_mbox))
+sram = ctypes.addressof(ctypes.c_uint32.from_buffer(_sram))
+
+
+def r32(m, off):
+    return ctypes.c_uint32.from_address(m + off).value
+
+
+def w32(m, off, v):
+    ctypes.c_uint32.from_address(m + off).value = v & 0xffffffff
+
+
+def words(m, off, n):
+    return [r32(m, off + 4 * i) for i in range(n)]
+
+
+class Framework:
+    # struct acpm_framework, u32 fields
+    FIELDS = ("plugins num_plugins ipc_channels num_ipc_channels pid_framework pid_max "
+              "ipc_ap_max ipc_cp_max ipc_gnss_max ipc_wlbt_max ipc_max irq_max ktime_index "
+              "log_buf_rear log_buf_front log_data log_entry_size log_entry_len ipc_base "
+              "ipc_buf_tx_size total_size fw_size intr_to_skip intr_flag_offset").split()
+
+    def __init__(self):
+        vals = words(sram, INITDATA, len(self.FIELDS))
+        self.__dict__.update(zip(self.FIELDS, vals))
+
+
+class Channel:
+    # struct ipc_channel: id field owner type, channel_info(13 u32), ap_poll
+    SIZE = (4 + 13 + 1) * 4
+
+    def __init__(self, base):
+        f = words(sram, base, 18)
+        (self.id, self.field, self.owner, self.type,
+         self.rx_rear, self.rx_front, self.rx_base, self.rx_indr_buf, self.rx_indr_buf_base,
+         self.rx_indr_buf_size, self.tx_rear, self.tx_front, self.tx_base, self.q_len,
+         self.q_elem_size, self.credit, self.mbox_addr, self.ap_poll) = f
+        # names from the APM's point of view; the AP transmits into the APM's rx queue
+        self.ap_tx = (self.rx_rear, self.rx_front, self.rx_base)
+        self.ap_rx = (self.tx_rear, self.tx_front, self.tx_base)
+
+
+fw = Framework()
+channels = [Channel(fw.ipc_channels + i * Channel.SIZE) for i in range(fw.ipc_ap_max)]
+seq = [int(time.time()) & 0x3f or 1]
+
+
+def find_channel(cid):
+    for ch in channels:
+        if ch.id == cid:
+            return ch
+    raise SystemExit(f"no channel with id {cid}")
+
+
+def send(ch, cmd, timeout=1.0):
+    rear_o, front_o, base_o = ch.ap_tx
+    seq[0] = seq[0] % 63 + 1
+    cmd = list(cmd) + [0] * (4 - len(cmd))
+    cmd[0] |= (seq[0] & 0x3f) << SEQ_SHIFT
+    if ch.q_len <= 1:
+        # single-slot "buffer" channel (type 2, e.g. DVFS ch 5): no ring pointers
+        for i, w in enumerate(cmd):
+            w32(sram, base_o + 4 * i, w)
+        w32(mbox, INTGR0, (1 << ch.id) << 16)
+        return seq[0]
+    front = r32(sram, front_o)
+    rear = r32(sram, rear_o)
+    nxt = (front + 1) % ch.q_len
+    t0 = time.time()
+    while nxt == r32(sram, rear_o):
+        if time.time() - t0 > timeout:
+            raise SystemExit("tx queue full")
+    for i, w in enumerate(cmd):
+        w32(sram, base_o + ch.q_elem_size * front + 4 * i, w)
+    w32(sram, front_o, nxt)
+    w32(mbox, INTGR0, (1 << ch.id) << 16)
+    return seq[0]
+
+
+def receive(ch, want_seq, timeout=1.0):
+    rear_o, front_o, base_o = ch.ap_rx
+    t0 = time.time()
+    if ch.q_len <= 1:
+        while not (r32(mbox, INTSR1) & (1 << ch.id)):
+            if time.time() - t0 > timeout:
+                raise SystemExit(f"no answer on buffer channel {ch.id}: INTSR1={r32(mbox, INTSR1):08x}")
+            time.sleep(0.0002)
+        words = [r32(sram, base_o + 4 * k) for k in range(4)]
+        w32(mbox, INTCR1, 1 << ch.id)
+        return words
+    while True:
+        if r32(mbox, INTSR1) & (1 << ch.id):
+            front = r32(sram, front_o)
+            rear = r32(sram, rear_o)
+            i = rear
+            while i != front:
+                w0 = r32(sram, base_o + ch.q_elem_size * i)
+                if ((w0 >> SEQ_SHIFT) & 0x3f) == want_seq:
+                    words = [r32(sram, base_o + ch.q_elem_size * i + 4 * k) for k in range(4)]
+                    if i != rear:  # move the entry at rear into our slot, then dequeue rear
+                        for k in range(ch.q_elem_size // 4):
+                            w32(sram, base_o + ch.q_elem_size * i + 4 * k,
+                                r32(sram, base_o + ch.q_elem_size * rear + 4 * k))
+                    rear = (rear + 1) % ch.q_len
+                    w32(sram, rear_o, rear)
+                    if rear == r32(sram, front_o):
+                        w32(mbox, INTCR1, 1 << ch.id)
+                        if rear != r32(sram, front_o):
+                            w32(mbox, INTGR1, 1 << ch.id)
+                    return words
+                i = (i + 1) % ch.q_len
+        if time.time() - t0 > timeout:
+            raise SystemExit(f"no answer for seq {want_seq}: INTSR1={r32(mbox, INTSR1):08x} "
+                             f"rx rear={r32(sram, rear_o)} front={r32(sram, front_o)}")
+        time.sleep(0.0002)
+
+
+def mfd(func, typ, reg, val=0, mask=0, ch_id=2):
+    ch = find_channel(ch_id)
+    cmd0 = ((typ & 0xf) << 8) | (reg & 0xff)
+    cmd1 = (func & 0xff) | ((val & 0xff) << 8) | ((mask & 0xff) << 16)
+    s = send(ch, [cmd0, cmd1, 0, 0])
+    words = receive(ch, s)
+    ret = (words[1] >> 24) & 0xff
+    dest = (words[1] >> 8) & 0xff
+    return ret, dest, words
+
+
+def cmd_info():
+    print(f"framework: plugins={fw.num_plugins} ipc_channels@{fw.ipc_channels:#x} "
+          f"n={fw.num_ipc_channels} ap_max={fw.ipc_ap_max} fw_size={fw.fw_size:#x}")
+    for ch in channels:
+        print(f"  ch id={ch.id} type={ch.type} poll={ch.ap_poll} q_len={ch.q_len} elem={ch.q_elem_size} "
+              f"ap_tx(rear/front/base)={ch.ap_tx[0]:#x}/{ch.ap_tx[1]:#x}/{ch.ap_tx[2]:#x} "
+              f"ap_rx={ch.ap_rx[0]:#x}/{ch.ap_rx[1]:#x}/{ch.ap_rx[2]:#x} "
+              f"txq={r32(sram, ch.ap_tx[0])}/{r32(sram, ch.ap_tx[1])} rxq={r32(sram, ch.ap_rx[0])}/{r32(sram, ch.ap_rx[1])}")
+    print(f"mailbox: INTSR0={r32(mbox, INTSR0):08x} INTMR0={r32(mbox, INTMR0):08x} "
+          f"INTSR1={r32(mbox, INTSR1):08x} INTMR1={r32(mbox, INTMR1):08x}")
+
+
+def main(argv):
+    if not argv or argv[0] == "info":
+        return cmd_info()
+    op = argv[0]
+    if op == "read":
+        ret, v, w = mfd(FUNC_READ, int(argv[1], 0), int(argv[2], 0))
+        print(f"read type={argv[1]} reg={argv[2]}: ret={ret} val={v:#04x} words={[hex(x) for x in w]}")
+    elif op == "write":
+        ret, v, w = mfd(FUNC_WRITE, int(argv[1], 0), int(argv[2], 0), int(argv[3], 0))
+        print(f"write ret={ret} words={[hex(x) for x in w]}")
+    elif op == "update":
+        ret, v, w = mfd(FUNC_UPDATE, int(argv[1], 0), int(argv[2], 0), int(argv[3], 0), int(argv[4], 0))
+        print(f"update ret={ret} words={[hex(x) for x in w]}")
+    elif op == "ipc":
+        # raw message on any channel: s9p-acpm ipc <ch> <w0> <w1> <w2> <w3>
+        ch = find_channel(int(argv[1], 0))
+        words_in = [int(x, 0) for x in argv[2:6]] + [0] * (4 - len(argv[2:6]))
+        s = send(ch, words_in)
+        w = receive(ch, s)
+        print(f"ipc ch{ch.id}: sent={[hex(x) for x in words_in]} got={[hex(x) for x in w]}")
+    elif op == "dvfs":
+        # ACPM DVFS (vendor acpm_dvfs.c): channel 5, cmd = [domain, kHz, FREQ_REQ=0|FREQ_GET=1, 0]
+        # domains (cal-if/exynos9810/acpm_dvfs_exynos9810.h): 0 mif, 1 int, 2 cpucl0, 3 cpucl1, 4 g3d
+        ch = find_channel(5)
+        dom = {"mif": 0, "int": 1, "little": 2, "big": 3, "gpu": 4}.get(argv[1], None)
+        dom = int(argv[1], 0) if dom is None else dom
+        if len(argv) > 2:
+            s = send(ch, [dom, int(argv[2], 0), 0, 0]); w = receive(ch, s)
+            print(f"dvfs set {argv[1]} -> {argv[2]} kHz: reply={[hex(x) for x in w]}")
+        else:
+            s = send(ch, [dom, 0, 1, 0]); w = receive(ch, s)
+            print(f"dvfs get {argv[1]}: {w[1]} kHz reply={[hex(x) for x in w]}")
+        on = argv[1] == "on"
+        for name, reg in (("LDO35 tsp_io", L35CTRL), ("LDO43 tsp_avdd", L43CTRL)):
+            ret, before, _ = mfd(FUNC_READ, PMIC, reg)
+            mode = 0xc0 if on else 0x00
+            ret2, _, _ = mfd(FUNC_UPDATE, PMIC, reg, mode, 0xc0)
+            ret3, after, _ = mfd(FUNC_READ, PMIC, reg)
+            print(f"{name} @{reg:#04x}: {before:#04x} -> {after:#04x} (ret {ret}/{ret2}/{ret3})")
+    else:
+        raise SystemExit(__doc__)
+
+
+if __name__ == "__main__":
+    main(sys.argv[1:])

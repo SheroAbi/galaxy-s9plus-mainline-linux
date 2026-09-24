@@ -1,0 +1,14 @@
+#!/bin/sh
+# Keep the CPUs and GPU off the idle-only low-voltage points. With
+# s9p_cpufreq.idle_floor and s9p_g3d.step_volt on, the phone froze roughly
+# once a day while idle (7 hard hangs 2026-09-17..23, none with a log); both
+# had passed 30-120 s tests only. Kernels up to #163 default them to on.
+for p in /sys/module/s9p_cpufreq/parameters/idle_floor /sys/module/s9p_g3d/parameters/step_volt; do
+	[ -w "$p" ] && echo N > "$p"
+	echo "$p=$(cat "$p" 2>/dev/null)"
+done
+# schedutil alone also parks the M3 cluster at 400 MHz / 700 mV, the one step
+# no load test covered. 1066 MHz / 750 mV is governor-tested (at 700 mV).
+p=/sys/devices/system/cpu/cpufreq/policy4/scaling_min_freq
+[ -w "$p" ] && echo 1066000 > "$p"
+echo "$p=$(cat "$p" 2>/dev/null)"

@@ -1,0 +1,14 @@
+[Unit]
+Description=Attach the BCM4361 Bluetooth controller
+Before=bluetooth.service
+ConditionPathExists=/dev/ttySAC0
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -c 'echo 1 > /sys/class/rfkill/rfkill0/state 2>/dev/null || true'
+ExecStart=/usr/bin/hciattach -n /dev/ttySAC0 bcm43xx 3000000 flow -
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=bluetooth.target

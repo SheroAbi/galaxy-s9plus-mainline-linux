@@ -1,0 +1,116 @@
+#!/bin/sh
+# Production init for the mainline 7.1 kernel: hand over to the Ubuntu install
+# on USERDATA. Same rootfs the 4.9 kernel boots, so this is a straight swap of
+# the kernel underneath a system that already works.
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+/bin/busybox --install -s /bin 2>/dev/null
+mkdir -p /proc /sys /dev /run /root
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+
+echo 8 > /proc/sys/kernel/printk
+echo 1 > /proc/sys/kernel/sysrq
+
+log() {
+	echo "S9P| $*" > /dev/kmsg 2>/dev/null
+	echo "S9P| $*"
+}
+
+# TWRP sits on RECOVERY: arm that first, so whatever goes wrong below, the next
+# reset comes up in a shell instead of in this kernel again.
+devmem 0x14060808 32 0x12345678 2>/dev/null
+devmem 0x1406080c 32 0x12345674 2>/dev/null
+
+log "===== S9+ MAINLINE $(uname -r) booting Ubuntu ====="
+
+# s9p_testrun=N on the command line: this is a test boot. A deadman in the
+# initramfs brings the phone back to TWRP N+120 s after boot whatever happens
+# to userspace (the rootfs service normally reboots earlier, at N s). The
+# subshell keeps running across switch_root; the moved procfs is reachable as
+# /root/proc from its point of view, and sysrq-b skips the reboot notifiers so
+# the recovery magic above stays in INFORM3.
+TESTRUN=$(sed -n 's/.*s9p_testrun=\([0-9]*\).*/\1/p' /proc/cmdline)
+if [ -n "$TESTRUN" ]; then
+	log "test run: deadman reboot to TWRP in $((TESTRUN + 120)) s"
+	(
+		sleep $((TESTRUN + 120))
+		echo "S9P| deadman: back to TWRP" > /root/dev/kmsg 2>/dev/null
+		sync
+		echo b > /root/proc/sysrq-trigger 2>/dev/null
+		echo b > /proc/sysrq-trigger 2>/dev/null
+	) &
+fi
+
+i=0
+while [ "$i" -lt 60 ]; do
+	[ -b /dev/sda25 ] && break
+	i=$((i + 1))
+	sleep 0.5
+done
+
+if [ ! -b /dev/sda25 ]; then
+	log "USERDATA never appeared -- no storage, dropping to a rescue shell"
+	log "block: $(echo $(ls -d /dev/sd* 2>/dev/null))"
+	exec setsid sh -i </dev/console >/dev/console 2>&1
+fi
+
+log "USERDATA found after $i half-seconds"
+if ! mount -t ext4 -o rw,noatime /dev/sda25 /root; then
+	log "mount of /dev/sda25 failed, retrying read-only"
+	mount -t ext4 -o ro /dev/sda25 /root || {
+		log "rootfs is not mountable"
+		exec setsid sh -i </dev/console >/dev/console 2>&1
+	}
+fi
+
+if [ ! -x /root/sbin/init ]; then
+	log "no /sbin/init in the rootfs"
+	exec setsid sh -i </dev/console >/dev/console 2>&1
+fi
+
+# Register snapshot of the USB stack after the drivers have run: PHY (USBCON),
+# DWC3 globals and the PMU isolation bits. Read-only, through /dev/mem.
+rd() { devmem "$1" 32 2>/dev/null || echo "????????"; }
+usb_dump() {
+	echo "usbcon: ver=$(rd 0x11100000) linkctrl=$(rd 0x11100004) linkport=$(rd 0x11100008) clkrst=$(rd 0x11100020) pwr=$(rd 0x11100024) ssppll=$(rd 0x11100030) pma=$(rd 0x11100048) utmi=$(rd 0x11100050) hsp=$(rd 0x11100054) hsptune=$(rd 0x11100058) hsptest=$(rd 0x1110005c)"
+	echo "dwc3: gsnpsid=$(rd 0x10c0c120) gctl=$(rd 0x10c0c110) gsts=$(rd 0x10c0c118) gusb2phycfg=$(rd 0x10c0c200) gusb3pipectl=$(rd 0x10c0c2c0) dcfg=$(rd 0x10c0c700) dctl=$(rd 0x10c0c704) dsts=$(rd 0x10c0c70c) gfladj=$(rd 0x10c0c630)"
+	echo "pmu: usb20=$(rd 0x1406072c) usb3dp=$(rd 0x14060704) g3d_status=$(rd 0x14064044)"
+	echo "i2c pins: gpp1 con=$(rd 0x10430020) dat=$(rd 0x10430024) pud=$(rd 0x10430028) | gpm14 con=$(rd 0x14220180) dat=$(rd 0x14220184) pud=$(rd 0x14220188) | gpm15 con=$(rd 0x142201a0) dat=$(rd 0x142201a4) pud=$(rd 0x142201a8)"
+	echo "i2c usi: usi03 swconf=$(rd 0x1041101c) con=$(rd 0x104b00c4) opt=$(rd 0x104b00c8) ctl=$(rd 0x104b0000) conf=$(rd 0x104b0040) trans=$(rd 0x104b0050) | cmgp03 swconf=$(rd 0x14212030) con=$(rd 0x143600c4) opt=$(rd 0x143600c8) ctl=$(rd 0x14360000) conf=$(rd 0x14360040) trans=$(rd 0x14360050)"
+}
+
+# The only log channel that survives a successful boot: the rootfs itself.
+# TWRP reads it back as /data/var/log/s9p-boot.log.
+mkdir -p /root/var/log
+{
+	echo "S9P boot $(uname -r) $(date 2>/dev/null) cmdline: $(cat /proc/cmdline)"
+	echo "udc: $(ls /sys/class/udc 2>/dev/null) state=$(cat /sys/class/udc/*/state 2>/dev/null) speed=$(cat /sys/class/udc/*/current_speed 2>/dev/null)"
+	echo "--- platform devices without a driver:"
+	for d in /sys/bus/platform/devices/*; do
+		[ -e "$d/driver" ] || echo "  unbound: ${d##*/}"
+	done
+	echo "--- i2c: $(echo $(ls /sys/bus/i2c/devices 2>/dev/null))"
+	for d in /sys/bus/i2c/devices/*-00*; do
+		echo "  ${d##*/}: $(cat $d/name 2>/dev/null) driver=$(basename $(readlink $d/driver 2>/dev/null) 2>/dev/null)"
+	done
+	echo "--- power: $(echo $(ls /sys/class/power_supply 2>/dev/null))"
+	for p in /sys/class/power_supply/*; do
+		echo "  ${p##*/}: type=$(cat $p/type 2>/dev/null) status=$(cat $p/status 2>/dev/null) online=$(cat $p/online 2>/dev/null) cap=$(cat $p/capacity 2>/dev/null) V=$(cat $p/voltage_now 2>/dev/null) I=$(cat $p/current_now 2>/dev/null) T=$(cat $p/temp 2>/dev/null)"
+	done
+	echo "--- input: $(cat /sys/class/input/input*/name 2>/dev/null | tr '\n' ',')"
+	echo "--- dri: $(echo $(ls /dev/dri 2>/dev/null))"
+	echo "--- usb registers:"
+	usb_dump
+	dmesg
+} > /root/var/log/s9p-boot.log 2>&1
+log "udc: $(ls /sys/class/udc 2>/dev/null) i2c: $(echo $(ls /sys/bus/i2c/devices 2>/dev/null))"
+log "switching to the Ubuntu rootfs"
+mount --move /proc /root/proc 2>/dev/null
+mount --move /sys /root/sys 2>/dev/null
+mount --move /dev /root/dev 2>/dev/null
+exec switch_root /root /sbin/init
+
+log "switch_root failed"
+exec setsid sh -i </dev/console >/dev/console 2>&1

@@ -1,0 +1,8 @@
+# build output
+/dist/
+/build-logs/
+*.o
+*.ko
+*.img
+__pycache__/
+*.pyc

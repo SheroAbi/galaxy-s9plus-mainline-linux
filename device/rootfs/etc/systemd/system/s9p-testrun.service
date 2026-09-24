@@ -1,0 +1,14 @@
+[Unit]
+Description=S9+ mainline port: periodic diagnostics and test-run reboot
+DefaultDependencies=no
+After=local-fs.target
+Before=basic.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/s9p-testrun
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=sysinit.target

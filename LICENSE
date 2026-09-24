@@ -1,0 +1,21 @@
+                    GNU GENERAL PUBLIC LICENSE
+                       Version 2, June 1991
+
+ Copyright (C) 1989, 1991 Free Software Foundation, Inc.,
+ 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
+ Everyone is permitted to copy and distribute verbatim copies
+ of this license document, but changing it is not allowed.
+
+This project contains Linux kernel drivers and device trees. They are
+licensed GPL-2.0-only, the same terms as the kernel they are built into.
+
+The full licence text is the one shipped with the Linux kernel as
+COPYING / LICENSES/preferred/GPL-2.0, and is reproduced here by reference:
+
+    https://www.kernel.org/doc/html/latest/process/license-rules.html
+    https://spdx.org/licenses/GPL-2.0-only.html
+
+Every source file carries its own SPDX identifier. Files taken unchanged from
+Samsung's vendor kernel (notably the UFS PHY calibration) keep the licence
+they were published under there; files vendored from other projects keep
+theirs and are listed in THIRD-PARTY.md.

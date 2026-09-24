@@ -1,0 +1,13 @@
+[Unit]
+Description=USB gadget (serial console + network)
+After=systemd-udev-trigger.service
+Before=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/usb-gadget
+ExecStop=/usr/local/sbin/usb-gadget stop
+
+[Install]
+WantedBy=multi-user.target

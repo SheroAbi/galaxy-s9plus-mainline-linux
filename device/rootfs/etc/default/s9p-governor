@@ -1,0 +1,2 @@
+# step limits while validating: S9P_GOV_MAX=big=2,little=1,gpu=2
+S9P_GOV_MAX=big=1,little=1,gpu=2

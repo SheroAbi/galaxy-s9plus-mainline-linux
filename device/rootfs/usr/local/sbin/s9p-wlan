@@ -1,0 +1,13 @@
+#!/bin/bash
+# S9+ mainline port: bring up WiFi (BCM4361 over PCIe channel 0).
+set -u
+dmesg -c >/dev/null
+echo "--- pcie-exynos9810 ---"
+timeout 30 modprobe pcie-exynos9810; echo "modprobe exit $?"
+sleep 1; dmesg | grep -vE "^\[.*\] (audit|systemd)" | head -60
+ls /sys/bus/pci/devices/ 2>/dev/null && for d in /sys/bus/pci/devices/*; do echo "$d: $(cat $d/vendor) $(cat $d/device)"; done
+if [ "${1:-}" = "full" ]; then
+  echo "--- brcmfmac ---"; dmesg -c >/dev/null
+  timeout 60 modprobe brcmfmac; echo "modprobe exit $?"; sleep 4; dmesg | head -60
+  ip link; iw dev 2>/dev/null
+fi

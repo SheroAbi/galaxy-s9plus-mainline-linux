@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Flight recorder: every kernel message plus a state line per minute,
+fsync'ed as written, so a hard hang leaves its last minute on disk.
+/var/log/s9p-blackbox.log (rotated to .1 at 4 MB)."""
+import os, select, time, glob
+
+LOG = "/var/log/s9p-blackbox.log"
+LIMIT = 4 << 20
+
+def rd(p, d="?"):
+    try:
+        with open(p) as f:
+            return f.read().strip()
+    except OSError:
+        return d
+
+def state():
+    q = "/sys/module/s9p_cpufreq/parameters/"
+    g = "/sys/module/s9p_g3d/parameters/"
+    c = "/sys/devices/system/cpu/cpufreq/"
+    wl = rd("/sys/class/net/wlp1s0/operstate")
+    return ("STATE up=%s load=%s little=%s big=%s gpu=%s rail=%s temp(l/b/g)=%s/%s/%s "
+            "idle_floor=%s step_volt=%s pll_to=%s wlan=%s mem_avail=%s" % (
+        rd("/proc/uptime").split()[0], " ".join(rd("/proc/loadavg").split()[:3]),
+        rd(c + "policy0/cpuinfo_cur_freq"), rd(c + "policy4/cpuinfo_cur_freq"),
+        rd(g + "cur_khz"), rd(g + "rail_uv"),
+        rd(q + "temp_little"), rd(q + "temp_big"), rd(q + "temp_gpu"),
+        rd(q + "idle_floor"), rd(g + "step_volt"), rd(q + "pll_lock_timeouts"), wl,
+        "".join(l.split()[1] for l in rd("/proc/meminfo", "").splitlines() if l.startswith("MemAvailable"))))
+
+class Out:
+    def __init__(self):
+        self.open()
+    def open(self):
+        self.fd = os.open(LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
+    def write(self, line, sync=True):
+        os.write(self.fd, (time.strftime("%Y-%m-%d %H:%M:%S ") + line.rstrip() + "\n").encode(errors="replace"))
+        if sync:
+            self.sync()
+    def sync(self):
+        os.fsync(self.fd)
+        if os.fstat(self.fd).st_size > LIMIT:
+            os.close(self.fd)
+            os.replace(LOG, LOG + ".1")
+            self.open()
+
+def main():
+    out = Out()
+    out.write("BOOT " + rd("/proc/sys/kernel/random/boot_id") + " " + rd("/proc/version"))
+    k = os.open("/dev/kmsg", os.O_RDONLY | os.O_NONBLOCK)   # starts at the oldest record
+    last = 0
+    while True:
+        now = time.monotonic()
+        if now - last >= 60:
+            out.write(state())
+            last = now
+        r, _, _ = select.select([k], [], [], 60 - (now - last) + 0.1)
+        n = 0
+        while r:
+            try:
+                rec = os.read(k, 8192).decode(errors="replace")
+            except BlockingIOError:
+                break
+            except OSError:      # EPIPE: overwritten records, just continue
+                continue
+            head, _, msg = rec.partition(";")
+            f = head.split(",")
+            ts = "%.3f" % (int(f[2]) / 1e6) if len(f) > 2 else "?"
+            out.write("K[%s] <%s> %s" % (ts, f[0], msg.split("\n")[0]), sync=False)
+            n += 1
+        if n:
+            out.sync()
+
+main()

@@ -1,0 +1,4 @@
+// Ask the helper on every request: it returns the cabled PC's proxy when that
+// PC is reachable and DIRECT otherwise.
+Acquire::http::Proxy-Auto-Detect "/usr/local/sbin/apt-proxy-detect";
+Acquire::https::Proxy-Auto-Detect "/usr/local/sbin/apt-proxy-detect";

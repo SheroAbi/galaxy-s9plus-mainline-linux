@@ -1,0 +1,75 @@
+#!/bin/sh
+# Opt-in CPU hotplug experiment, executed by the running Linux initramfs.
+case " $(cat /proc/cmdline) " in
+    *" s9p.verify_cpus=1 "*)
+        echo "CPUVERIFY: kernel=$(uname -r) online=$(cat /sys/devices/system/cpu/online)"
+        if [ "$(cat /sys/devices/system/cpu/online)" != 0-7 ]; then
+            echo "CPUVERIFY: FAIL eight CPUs are not online"
+            exit 1
+        fi
+        set -- $(sha256sum /bin/busybox)
+        expected=$1
+        echo "CPUVERIFY: expected=$expected rounds=64 per CPU"
+        pids=""
+        for cpu in 0 1 2 3 4 5 6 7; do
+            timeout 25 taskset -c "$cpu" sh -c '
+                cpu=$1
+                expected=$2
+                echo "CPUVERIFY: CPU$cpu affinity:"
+                grep "^Cpus_allowed_list:" /proc/self/status
+                n=0
+                while [ "$n" -lt 64 ]; do
+                    set -- $(sha256sum /bin/busybox)
+                    if [ "$1" != "$expected" ]; then
+                        echo "CPUVERIFY: FAIL CPU$cpu digest mismatch round=$n"
+                        exit 1
+                    fi
+                    n=$((n + 1))
+                done
+                echo "CPUVERIFY: PASS CPU$cpu 64 matching digests"
+            ' sh "$cpu" "$expected" > "/tmp/s9p-cpu-$cpu.log" 2>&1 &
+            pids="$pids $!"
+        done
+        failed=0
+        for pid in $pids; do
+            wait "$pid" || failed=1
+        done
+        for cpu in 0 1 2 3 4 5 6 7; do
+            cat "/tmp/s9p-cpu-$cpu.log"
+        done
+        echo "CPUVERIFY: result=$failed online=$(cat /sys/devices/system/cpu/online)"
+        exit "$failed"
+        ;;
+esac
+
+case " $(cat /proc/cmdline) " in
+    *" s9p.hotplug=4 "*) ;;
+    *) exit 0 ;;
+esac
+
+echo "HOTPLUG: running inside $(uname -r) before CPU4 activation"
+echo "HOTPLUG: online=$(cat /sys/devices/system/cpu/online) possible=$(cat /sys/devices/system/cpu/possible) present=$(cat /sys/devices/system/cpu/present)"
+sleep 2
+
+# Use CPU0 for the sysfs operation and CPU2 for the independent recovery timer.
+# The kernel diagnostic observer uses CPU1, so these roles do not overlap.
+taskset -c 2 sh -c '
+    sleep 25
+    echo "S9P| HOTPLUG watchdog: resetting after stalled activation" > /dev/kmsg
+    devmem 0x14060808 32 0x12345678
+    devmem 0x1406080c 32 0x12345674
+    echo c > /proc/sysrq-trigger
+    sleep 2
+    devmem 0x14060400 32 1
+' > /dev/null 2>&1 &
+hotplug_timer=$!
+
+echo "HOTPLUG: requesting CPU4 online through Linux sysfs"
+taskset -c 0 sh -c 'echo 1 > /sys/devices/system/cpu/cpu4/online'
+hotplug_rc=$?
+echo "HOTPLUG: CPU4 request rc=$hotplug_rc online=$(cat /sys/devices/system/cpu/online)"
+if [ "$(cat /sys/devices/system/cpu/cpu4/online)" = 1 ]; then
+    taskset -c 4 sh -c 'echo "HOTPLUG: process executing on CPU4"; grep -E "^Cpus_allowed_list:" /proc/self/status; sha256sum /bin/busybox'
+fi
+kill "$hotplug_timer" 2>/dev/null
+exit "$hotplug_rc"

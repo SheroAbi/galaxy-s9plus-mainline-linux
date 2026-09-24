@@ -1,0 +1,1043 @@
+// SPDX-License-Identifier: GPL-2.0 OR BSD-3-Clause
+/*
+ * Samsung Galaxy S9+ (star2lte/SM-G965F) device tree source
+ *
+ * Derived from the Galaxy S9 (starlte) source, which shares this board design.
+ * The S9+ carries 6 GB instead of 4 GB, so it has one more memory bank; the
+ * addresses below are the ones this device's own bootloader reports through
+ * update_memory_node(), and the framebuffer base matches the bootloader's
+ * s3cfb.bootloaderfb= argument.
+ */
+
+/dts-v1/;
+#include "exynos9810.dtsi"
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/input.h>
+
+/* Initial per-MHz capacity calibration on this device, same CoreMark binary:
+ * A55: 4174.145 iterations/s at 1150.5 MHz; M3: 7127.076 at 1066 MHz.
+ * (4174.145 / 1150.5) / (7127.076 / 1066) * 1024 = 556.
+ * CRCs passed and sampled clocks stayed fixed throughout both runs.
+ * This is a workload-based capacity estimate, not a power/energy model. */
+&cpu0 { capacity-dmips-mhz = <556>; };
+&cpu1 { capacity-dmips-mhz = <556>; };
+&cpu2 { capacity-dmips-mhz = <556>; };
+&cpu3 { capacity-dmips-mhz = <556>; };
+&cpu4 { capacity-dmips-mhz = <1024>; };
+&cpu5 { capacity-dmips-mhz = <1024>; };
+&cpu6 { capacity-dmips-mhz = <1024>; };
+&cpu7 { capacity-dmips-mhz = <1024>; };
+
+/ {
+	model = "Samsung Galaxy S9+ (SM-G965F)";
+	compatible = "samsung,star2lte", "samsung,exynos9810";
+	chassis-type = "handset";
+
+	/*
+	 * sboot picks its device tree out of the boot image's DTBH table by these
+	 * four values, not by "compatible". dtbTool-exynos copies them straight out
+	 * of the blob, so without them the entry is all zeroes and the bootloader
+	 * finds no match for Star2 rev 26. Values taken from Samsung's own
+	 * exynos9810-star2lte_eur_open_26 device tree.
+	 */
+	model_info-chip = <0x2652>;
+	model_info-platform = "android";
+	model_info-subtype = "samsung";
+	model_info-hw_rev = <0x1a>;
+	model_info-hw_rev_end = <0xff>;
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <1>;
+		ranges;
+
+		/*
+		 * Reachable only when booted through uniLoader. sboot builds
+		 * the whole command line itself and overwrites whatever the
+		 * boot image carries -- that is why "console=tty0 loglevel=8"
+		 * in the boot image header never had any effect. uniLoader
+		 * hands the kernel this device tree instead, so /chosen here
+		 * is finally the one the kernel reads.
+		 */
+		bootargs = "console=tty0 loglevel=8 earlycon keep_bootcon ignore_loglevel panic=10";
+
+		framebuffer@cc000000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0xcc000000 (1440 * 2960 * 4)>;
+			width = <1440>;
+			height = <2960>;
+			stride = <(1440 * 4)>;
+			format = "a8r8g8b8";
+			/* FB-STATUS */
+		};
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		pinctrl-0 = <&key_power &key_voldown &key_volup &key_wink>;
+		pinctrl-names = "default";
+
+		power-key {
+			label = "Power";
+			linux,code = <KEY_POWER>;
+			gpios = <&gpa2 4 GPIO_ACTIVE_LOW>;
+			wakeup-source;
+		};
+
+		voldown-key {
+			label = "Volume Down";
+			linux,code = <KEY_VOLUMEDOWN>;
+			gpios = <&gpa0 4 GPIO_ACTIVE_LOW>;
+		};
+
+		volup-key {
+			label = "Volume Up";
+			linux,code = <KEY_VOLUMEUP>;
+			gpios = <&gpa0 3 GPIO_ACTIVE_LOW>;
+		};
+
+		/* Bixby on stock firmware; mapped as a camera button for now. */
+		wink-key {
+			label = "Camera";
+			linux,code = <KEY_CAMERA>;
+			gpios = <&gpa0 6 GPIO_ACTIVE_LOW>;
+		};
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x0 0x80000000 0x3c800000>,
+		      <0x0 0xc0000000 0x20000000>,
+		      <0x0 0xe1900000 0x1e700000>,
+		      <0x8 0x80000000 0x80000000>,
+		      <0x9 0x00000000 0x80000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <1>;
+		ranges;
+
+		/*
+		 * Fixed firmware regions from the Samsung DT an SM-G965F runs with
+		 * (read back from TWRP's /sys/firmware/fdt). uniLoader
+		 * substitutes our DT, so these reservations must be carried over.
+		 * Dynamic Android ION heaps are deliberately not copied here.
+		 */
+		sec-debug@80000000 {
+			reg = <0x0 0x80000000 0x2000>;
+			no-map; /* debug magic plus sboot's adjacent kaslr_region */
+		};
+
+		/* Extent of the log buffers listed in the stock boot arguments. */
+		sboot-logs@91202000 {
+			reg = <0x0 0x91202000 0x59a000>;
+			no-map;
+		};
+
+		rkp@af800000 {
+			reg = <0x0 0xaf800000 0x1800000>;
+			no-map;
+		};
+
+		tima@b8000000 {
+			reg = <0x0 0xb8000000 0x200000>;
+			no-map;
+		};
+
+		seclog@c0000000 {
+			reg = <0x0 0xc0000000 0x80000>;
+			no-map;
+		};
+
+		secure-camera@e1900000 {
+			reg = <0x0 0xe1900000 0x1e00000>;
+			no-map;
+		};
+
+		modem@f0000000 {
+			reg = <0x0 0xf0000000 0x9200000>;
+			no-map;
+		};
+
+		cp-logging@f9200000 {
+			reg = <0x0 0xf9200000 0x2000000>;
+			no-map;
+		};
+
+		abox@fb200000 {
+			reg = <0x0 0xfb200000 0x2800000>;
+			no-map;
+		};
+
+		/* Split exynos_ss around our existing ramoops window. */
+		snapshot-before-pstore@fda00000 {
+			reg = <0x0 0xfda00000 0x1310000>;
+			no-map;
+		};
+
+		snapshot-after-pstore@fed18000 {
+			reg = <0x0 0xfed18000 0xae8000>;
+			no-map;
+		};
+
+		camera-firmware@ff800000 {
+			reg = <0x0 0xff800000 0x800000>;
+			no-map;
+		};
+
+		framebuffer@cc000000 {
+			reg = <0x0 0xcc000000 (1440 * 2960 * 4)>;
+			no-map;
+		};
+
+		/*
+		 * Every scanout buffer has to be one contiguous block below
+		 * 4 GB: DECON's fetch address register is 32 bits wide and the
+		 * KMS driver hands out drm_gem_dma (CMA) objects. One 1440x2960
+		 * XRGB8888 frame is 16.3 MiB, and the compositor needs a triple
+		 * buffered surface for the panel, another set for every virtual
+		 * monitor the remote desktop adds, plus the fbdev emulation and
+		 * this driver's black frame.
+		 *
+		 * The kernel default of 128 MiB fitted exactly one frame:
+		 * measured on the running desktop, the second DRM_IOCTL_MODE_
+		 * CREATE_DUMB of that size returned ENOMEM, Mesa logged "Failed
+		 * to create scanout resource" and gnome-shell fell back to
+		 * copying every frame through the CPU. 320 MiB leaves room for
+		 * all of the above even when CMA is fragmented.
+		 *
+		 * Placed by hand: the region must sit below 4 GB and inside the
+		 * gap between sboot-logs (ends 0x9179c000) and rkp (starts
+		 * 0xaf800000), which is the largest free stretch down there.
+		 */
+		display_cma: linux,cma {
+			compatible = "shared-dma-pool";
+			reg = <0x0 0x98000000 0x14000000>;	/* 320 MiB */
+			reusable;
+			linux,cma-default;
+		};
+
+		/*
+		 * Same window and the same split as Samsung's own exynos-snapshot
+		 * log_pstore item (ramoops: attached 0x8000@0xfed10000, two 16K
+		 * halves, no ECC), so the stock 4.9 kernel in TWRP can read back
+		 * what this kernel wrote.
+		 *
+		 * The second half is a console zone here where Samsung puts pmsg.
+		 * Both are plain persistent_ram ring buffers in the same format,
+		 * so TWRP surfaces our continuous console log as pmsg-ramoops-0 --
+		 * which means a kernel that hangs before it ever panics still
+		 * leaves its boot log behind.
+		 */
+		ramoops@fed10000 {
+			compatible = "ramoops";
+			reg = <0x0 0xfed10000 0x8000>;
+			record-size = <0x4000>;
+			console-size = <0x4000>;
+			pmsg-size = <0x0>;
+			ftrace-size = <0x0>;
+			ecc-size = <0x0>;
+		};
+	};
+};
+
+/*
+ * There is no CMU driver for this SoC yet. sboot has already set FSYS0 up --
+ * it loaded this very image over UFS -- so the rates are described as fixed
+ * clocks rather than reprogrammed. UFS_EMBD feeds the UNIPRO mclk, from which
+ * the calibration derives every PA timer, so its value has to be the real one.
+ */
+&{/} {
+	/* Enable line from this device's working Samsung DT; voltage is fixed. */
+	ufs_vcc: regulator-ufs-vcc {
+		compatible = "regulator-fixed";
+		regulator-name = "ufs-vcc";
+		gpio = <&gpd0 2 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+		status = "disabled"; /* UFS-STATUS */
+	};
+
+	/*
+	 * CMU gate registers to open before the I2C drivers probe. From the
+	 * vendor cmucal-sfr tables: PERIC0 base 0x10400000, CMGP base
+	 * 0x14200000. USI05 is the touch bus at 0x104b0000, USI_CMGP03 the
+	 * PMIC bus at 0x14360000.
+	 */
+	clock-gates {
+		compatible = "s9p,clock-gates";
+		/*
+		 * The touch bus at 0x104b0000 is PERIC0 USI03 (0x10450000 is
+		 * USI00, each USI has a "usi" and an "i2c" block 0x10000 apart;
+		 * the stock aliases spi4 and hsi2c10 both point here). USI05 is
+		 * 0x104f0000. Its SW_CONF is therefore usi_3 = 0x1041101c.
+		 */
+		s9p,gate-registers = <0x10402018>,	/* GATE_CLK_PERIC0_USI03_USI */
+				     <0x14202014>,	/* GATE_CLK_USI_CMGP03 */
+				     /* the whole chain above them, CMU top down to the IP ports */
+				     <0x1a2420bc>,	/* GATE_CLKCMU_PERIC0_IP (CMU top) */
+				     <0x1a242028>,	/* GATE_CLKCMU_CMGP_BUS (CMU top) */
+				     <0x104020dc>,	/* USI03_USI IPCLK port */
+				     <0x104020e0>,	/* USI03_USI PCLK port */
+				     <0x142020a8>,	/* USI_CMGP03 IPCLK port */
+				     <0x142020ac>,	/* USI_CMGP03 PCLK port */
+		/*
+		 * USB: the PHY's reference clocks, same story
+		 */
+					     <0x1a242064>,	/* GATE_CLKCMU_FSYS0_USB30DRD (CMU top) */
+					     <0x1100206c>,	/* FSYS0 USB30DRD_REF_CLK */
+					     <0x11002008>;	/* FSYS0 USBDPPHY_REF_SOC_PLL */
+		/*
+		 * PCIe channel 0 (WiFi) gates are deliberately NOT here: the
+		 * FSYS1 PCIe gate and Q-Channel hint registers abort the bus
+		 * (synchronous external abort) while the PCIe clock domain is
+		 * down -- measured at QCH_CON_PCIE_GEN2_APB 0x1141302c with a
+		 * panic in s9p_clkgate_init. The PCIe driver opens what it
+		 * needs itself, in vendor order: PMU PCIE_PHY_CONTROL first,
+		 * then gates, then the PHY.
+		 */
+		/*
+		 * Both I2C blocks are fed from PLL_SHARED2 (MUX_CLKCMU_PERIC0_IP
+		 * and MUX_CLKCMU_CMGP_BUS both select DIV_PLL_SHARED2_DIV2). The
+		 * vendor clock framework in TWRP releases that PLL when its last
+		 * consumer goes idle, so it may arrive switched off.
+		 */
+		s9p,pll-enable = <0x1a240220>;		/* PLL_CON0_PLL_SHARED2 */
+		/*
+		 * The combo PHY has two PMU controls. The driver releases the
+		 * USB 2.0 one (0x72c); the vendor also releases the DP/USB3
+		 * side (0x704), and the HS part may depend on it.
+		 */
+		/*
+		 * USI blocks: select I2C in the sysreg SW_CONF (bit 2), release
+		 * the block reset (USI_CON at +0xc4) and request its clock
+		 * (USI_OPTION at +0xc8, bit 1) -- what exynos-usi does on the
+		 * SoCs it supports. The gates above were already open; this is
+		 * what the vendor's I2C driver did for itself.
+		 */
+		/*
+		 * First of all: Samsung's recovery magic into INFORM2/INFORM3,
+		 * long before any driver can crash the kernel. A panic or a
+		 * hang then lands in TWRP on RECOVERY instead of restarting
+		 * this kernel for ever; a clean reboot rewrites INFORM3
+		 * through syscon-reboot-mode anyway.
+		 */
+		s9p,set-registers = <0x14060808 0x12345678>,	/* PMU INFORM2 */
+				    <0x1406080c 0x12345674>,	/* PMU INFORM3 = recovery */
+				    /*
+				     * DECON HW_SW_TRIG_CONTROL = 0x1281, the
+				     * write uniLoader's soc_init() does on this
+				     * SoC ("allow framebuffer to be written
+				     * to"). Without it the simple framebuffer
+				     * in 0xcc000000 updates but the panel never
+				     * shows the new content.
+				     */
+				    <0x16030070 0x1281>,
+				    /*
+				     * sboot and TWRP's kernel leave both cluster
+				     * watchdogs armed. Cluster 0's is stopped here;
+				     * cluster 1's stays armed and is taken over by
+				     * the watchdog node below, so a boot that wedges
+				     * the SoC resets instead of hanging for ever.
+				     */
+				    <0x10050000 0x0>,	/* WDT cluster 0 WTCON */
+				    /*
+				     * Arm cluster 1's watchdog here, in the
+				     * first instructions of the boot, instead
+				     * of trusting whatever sboot left. The
+				     * s3c2410_wdt driver takes it over at
+				     * 1.3 s, but the warm-reboot hang happens
+				     * before that, and an unarmed watchdog
+				     * means the device stays on the Samsung
+				     * logo until someone holds the buttons.
+				     *
+				     * 26 MHz / (255+1) / 128 = 793 Hz, so
+				     * 23805 counts is 30 s -- twice the normal
+				     * time to userspace. WTDAT and WTCNT are
+				     * loaded before WTCON starts it.
+				     */
+				    <0x10060004 23805>,	/* WDT1 WTDAT */
+				    <0x10060008 23805>,	/* WDT1 WTCNT */
+				    <0x10060000 0xff39>,	/* WDT1 WTCON: pres 255,
+								 * div 128, enable, reset */
+				    <0x1041101c 0x4>,	/* PERIC0 USI03 SW_CONF: I2C */
+				    <0x14212030 0x4>,	/* CMGP USI03 SW_CONF: I2C */
+				    <0x104b00c4 0x0>,	/* USI03 USI_CON: reset off */
+				    <0x143600c4 0x0>;	/* USI_CMGP03 USI_CON: reset off */
+		/*
+		 * Unmask the cluster-1 watchdog's reset request in the PMU.
+		 * sboot leaves bit 23 of MASK_WDT_RESET_REQUEST set, and with
+		 * it set an expired watchdog raises nothing -- which is why
+		 * arming the watchdog alone changed nothing about the hang.
+		 */
+		s9p,clear-registers = <0x1406040c 0x800000>;
+
+		s9p,or-registers = <0x14060704 0x1>,	/* PMU USB3/DP PHY control */
+				   <0x104b00c8 0x2>,	/* USI03 USI_OPTION: CLKREQ_ON */
+				   <0x143600c8 0x2>;	/* USI_CMGP03 USI_OPTION: CLKREQ_ON */
+		/*
+		 * Read-only: the muxes and dividers behind the fixed-clock
+		 * stand-ins, so the real rates can be worked out from the log.
+		 */
+		s9p,dump-registers = <0x14060404>,	/* PMU RST_STAT: why we are here */
+				     <0x10050000>,	/* WDT0 WTCON */
+				     <0x10050004>,	/* WDT0 WTDAT */
+				     <0x10050008>,	/* WDT0 WTCNT */
+				     <0x10060000>,	/* WDT1 WTCON */
+				     <0x10060004>,	/* WDT1 WTDAT */
+				     <0x10060008>,	/* WDT1 WTCNT */
+				     <0x1a240120>,	/* PLL_CON0_PLL_SHARED0 */
+				     <0x1a240220>,	/* PLL_CON0_PLL_SHARED2 */
+				     <0x1a2418dc>,	/* DIV_PLL_SHARED0_DIV4 */
+				     <0x1a2418ec>,	/* DIV_PLL_SHARED2_DIV2 */
+				     <0x1a2410ac>,	/* MUX_CLKCMU_PERIC0_BUS */
+				     <0x1a2418b0>,	/* DIV_CLKCMU_PERIC0_BUS */
+				     <0x14201004>,	/* MUX_CLK_CMGP_BUS */
+				     <0x1a2410b0>,	/* MUX_CLKCMU_PERIC0_IP */
+				     <0x1a2418b4>,	/* DIV_CLKCMU_PERIC0_IP */
+				     <0x1a2420bc>,	/* GATE_CLKCMU_PERIC0_IP */
+				     <0x10400100>,	/* PERIC0 BUS_USER mux */
+				     <0x10400120>,	/* PERIC0 IP_USER mux */
+				     <0x10401810>,	/* DIV_CLK_PERIC0_USI03_USI */
+				     <0x10403038>,	/* QCH_CON_USI03_USI */
+				     /* I2C pins as TWRP left them: CON/DAT/PUD */
+				     <0x10430020>,	/* gpp1 CON (touch SCL/SDA = gpp1-4/5) */
+				     <0x10430024>,	/* gpp1 DAT */
+				     <0x10430028>,	/* gpp1 PUD */
+				     <0x14220180>,	/* gpm14 CON (PMIC SCL) */
+				     <0x14220184>,	/* gpm14 DAT */
+				     <0x14220188>,	/* gpm14 PUD */
+				     <0x142201a0>,	/* gpm15 CON (PMIC SDA) */
+				     <0x142201a4>,	/* gpm15 DAT */
+				     <0x142201a8>,	/* gpm15 PUD */
+				     <0x1a241028>,	/* MUX_CLKCMU_CMGP_BUS */
+				     <0x1a241824>,	/* DIV_CLKCMU_CMGP_BUS */
+				     <0x14200100>,	/* CMGP BUS_USER mux */
+				     <0x14200120>,	/* CMGP DLL_USER mux */
+				     <0x14201018>,	/* MUX_CLK_USI_CMGP03 */
+				     <0x14201814>,	/* DIV_CLK_USI_CMGP03 */
+				     <0x142020a8>,	/* USI_CMGP03 IPCLK gate */
+				     <0x142020ac>,	/* USI_CMGP03 PCLK gate */
+				     <0x14203050>,	/* QCH_CON_USI_CMGP03 */
+				     <0x1a241060>,	/* MUX_CLKCMU_FSYS0_USB30DRD */
+				     <0x1a241858>,	/* DIV_CLKCMU_FSYS0_USB30DRD */
+					     <0x110001e0>,	/* FSYS0 USB30DRD_USER mux */
+					     <0x1100304c>,	/* QCH USB30DRD_CTRL */
+					     <0x11003050>,	/* QCH USB30DRD_LINK */
+					     <0x11003054>,	/* QCH USBDPPHY */
+					     <0x11003058>,	/* QCH USBPCS */
+					     /* PCIe mux/divider/QCH reads abort while the
+					      * PCIe domain is down -- see gate-registers note. */
+					     <0x14064044>,	/* PMU EMBEDDED_G3D_STATUS */
+				     <0x17400140>,	/* PLL_CON0_PLL_G3D */
+				     <0x17400100>;	/* MUX_CLKCMU_EMBEDDED_G3D_USER */
+	};
+
+	hsi2c_clk_stub: clock-hsi2c-stub {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <200000000>;
+	};
+
+	/* the cluster watchdogs count on the 26 MHz crystal (stock rate_watchdog = OSCCLK) */
+	wdt_clk: clock-wdt {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <26000000>;
+	};
+};
+
+&soc {
+	/*
+	 * Cluster 1's watchdog, left armed by sboot and taken over here.
+	 *
+	 * Roughly every second warm reboot out of Ubuntu wedges somewhere in
+	 * the driver probe phase -- after the clock gates are opened at 0.28 s
+	 * and before the initramfs brings up the USB gadget at about 3 s. No
+	 * log survives it (sboot clears the pstore region), and with no
+	 * watchdog running the device simply stays on the Samsung logo until
+	 * someone holds Power and Volume Down for ten seconds.
+	 *
+	 * Leaving this one armed turns that into a reset. INFORM3 already
+	 * carries the recovery magic by then (the clock-gates node writes it
+	 * first thing), so the reset lands in TWRP, which is reachable over
+	 * USB instead of needing the buttons.
+	 *
+	 * Register offsets and the SPI number are from the device's own Samsung
+	 * DT (read back from TWRP, node watchdog_cl1). The
+	 * exynos7 variant of s3c2410_wdt is the matching one: PMU mask bit 23
+	 * at 0x040c and reset status bit 23 at 0x0404.
+	 */
+	watchdog_cl1: watchdog@10060000 {
+		compatible = "samsung,exynos7-wdt";
+		reg = <0x10060000 0x100>;
+		interrupts = <GIC_SPI 465 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&wdt_clk>;
+		clock-names = "watchdog";
+		samsung,syscon-phandle = <&pmu_system_controller>;
+		/*
+		 * Long enough that the userspace ping (systemd's
+		 * RuntimeWatchdogSec) is comfortably inside it even on a slow
+		 * boot, short enough that a wedge is over in a minute.
+		 */
+		timeout-sec = <60>;
+	};
+};
+
+/*
+ * PSCI CPU_SUSPEND is not validated on this port. The previous idle-state
+ * experiment stalled during boot; keep every CPU on architectural WFI.
+ * CPU frequency/voltage scaling and GPU DVFS remain independent and enabled.
+ */
+
+
+&{/} {
+
+	/* 26 MHz crystal, the "ext_xtal" the stock PHY node refers to. */
+	usb_ref_clk: clock-usb-ref {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <26000000>;
+	};
+
+	/* Device mode only; the driver insists on the handles regardless. */
+	vbus_stub: regulator-vbus-stub {
+		compatible = "regulator-fixed";
+		regulator-name = "vbus-stub";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+	};
+
+	battery: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion";
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4400000>;
+		energy-full-design-microwatt-hours = <13480000>;
+		charge-full-design-microamp-hours = <3500000>;
+		constant-charge-current-max-microamp = <2150000>;
+		constant-charge-voltage-max-microvolt = <4400000>;
+	};
+
+	/* Both LDOs are left on by sboot; the driver only needs the handles. */
+	tsp_io: regulator-tsp-io {
+		compatible = "regulator-fixed";
+		regulator-name = "tsp_io";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	tsp_avdd: regulator-tsp-avdd {
+		compatible = "regulator-fixed";
+		regulator-name = "tsp_avdd";
+		regulator-min-microvolt = <3000000>;
+		regulator-max-microvolt = <3000000>;
+		regulator-always-on;
+		regulator-boot-on;
+	};
+
+	ufs_clk_hci: clock-ufs-hci {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <166500000>;
+		clock-output-names = "GATE_UFS_EMBD";
+	};
+
+	ufs_clk_unipro: clock-ufs-unipro {
+		compatible = "fixed-clock";
+		#clock-cells = <0>;
+		clock-frequency = <166500000>;
+		clock-output-names = "UFS_EMBD";
+	};
+};
+
+&pinctrl_fsys0 {
+	ufs_rst_n: ufs-reset {
+		samsung,pins = "gpf0-1";
+		samsung,pin-function = <2>;
+		samsung,pin-pud = <0>;
+	};
+
+	ufs_refclk_out: ufs-refclk {
+		samsung,pins = "gpf0-0";
+		samsung,pin-function = <2>;
+		samsung,pin-pud = <0>;
+	};
+};
+
+&soc {
+	sysreg_fsys0: syscon@11010000 {
+		compatible = "samsung,exynos9810-fsys0-sysreg", "syscon";
+		reg = <0x11010000 0x1000>;
+	};
+
+	/*
+	 * USB 2.0 PHY. TWRP's kernel powers the PHY down on reboot, so unlike
+	 * the UFS clocks it cannot be inherited. The driver replays the vendor
+	 * CAL sequence for this exact PHY revision (0x300/0x400) and releases
+	 * both PMU isolation bits (0x72c USB2, 0x704 USB3/DP). USB 2.0 only;
+	 * the SuperSpeed PMA stays powered down.
+	 */
+	usbdrd_phy: phy@11100000 {
+		compatible = "samsung,exynos9810-usbdrd-phy";
+		reg = <0x11100000 0x200>;
+		clocks = <&usb_ref_clk>, <&hsi2c_clk_stub>;
+		clock-names = "ref", "phy";
+		samsung,pmu-syscon = <&pmu_system_controller>;
+		#phy-cells = <1>;
+	};
+
+	usb: usb@10c00000 {
+		compatible = "snps,dwc3";
+		reg = <0x10c00000 0x10000>;
+		interrupts = <GIC_SPI 244 IRQ_TYPE_LEVEL_HIGH>;
+		phys = <&usbdrd_phy 0>;
+		phy-names = "usb2-phy";
+		dr_mode = "peripheral";
+		maximum-speed = "high-speed";
+		snps,dis_u2_susphy_quirk;
+		snps,dis_u3_susphy_quirk;
+		snps,dis-u2-freeclk-exists-quirk;
+		snps,quirk-frame-length-adjustment = <0x20>;
+		status = "okay";
+	};
+
+	/*
+	 * Two of the eight HSI2C controllers, for the touch panel and the
+	 * MAX77705 PMIC. Both are USIv2 blocks; the s9p clock-gates node above
+	 * selects I2C in their SW_CONF and releases the USI reset. The clocks
+	 * are fixed-clock stand-ins (stock default-clk = 200 MHz); the rate
+	 * only feeds the SCL divider.
+	 *
+	 * The controller is the "AutoV9" generation of the IP: transfer-done
+	 * interrupt in bit 7, 64-deep FIFO, and SCL = IPCLK / ((CLK_DIV+1)*16)
+	 * with CLK_DIV in TIMING_FS3[23:16] (vendor exynos5_i2c_set_timing).
+	 * The exynos5 flavour waits on the wrong interrupt bit, the 8895
+	 * flavour computes a CLK_DIV of 0 (12.5 MHz SCL): both end in
+	 * "tx timeout". 370 kHz mirrors the vendor's fast-mode rate.
+	 */
+	hsi2c_tsp: i2c@104b0000 {
+		compatible = "samsung,exynosautov9-hsi2c";
+		reg = <0x104b0000 0x1000>;
+		interrupts = <GIC_SPI 404 IRQ_TYPE_LEVEL_HIGH>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		clocks = <&hsi2c_clk_stub>, <&hsi2c_clk_stub>;
+		clock-names = "hsi2c", "hsi2c_pclk";
+		clock-frequency = <370000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&hsi2c10_bus>;
+		status = "okay";
+
+		touchscreen@48 {
+			compatible = "samsung,s6sy761";
+			reg = <0x48>;
+			interrupt-parent = <&gpa1>;
+			interrupts = <0 IRQ_TYPE_LEVEL_LOW>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&tsp_irq>;
+			vdd-supply = <&tsp_io>;
+			avdd-supply = <&tsp_avdd>;
+			touchscreen-size-x = <4096>; /* firmware reports 12-bit coordinates, not pixels */
+			touchscreen-size-y = <4096>;
+		};
+	};
+
+	hsi2c_pmic: i2c@14360000 {
+		compatible = "samsung,exynosautov9-hsi2c";
+		reg = <0x14360000 0x1000>;
+		interrupts = <GIC_SPI 6 IRQ_TYPE_LEVEL_HIGH>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		clocks = <&hsi2c_clk_stub>, <&hsi2c_clk_stub>;
+		clock-names = "hsi2c", "hsi2c_pclk";
+		clock-frequency = <370000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&hsi2c40_bus>;
+		status = "okay";
+
+		/*
+		 * MAX77705: one external IRQ (gpa1-6) demultiplexed by the
+		 * MFD into charger (0), topsys (1), fuel gauge (2), USB-C (3).
+		 * Charger and fuel gauge are separate I2C addresses that take
+		 * their interrupts from the MFD's domain.
+		 */
+		max77705: pmic@66 {
+			compatible = "maxim,max77705";
+			reg = <0x66>;
+			interrupt-parent = <&gpa1>;
+			interrupts = <6 IRQ_TYPE_LEVEL_LOW>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&pmic_irq>;
+			interrupt-controller;
+			#interrupt-cells = <1>;
+		};
+
+		max77705_charger: charger@69 {
+			compatible = "maxim,max77705-charger";
+			reg = <0x69>;
+			monitored-battery = <&battery>;
+			interrupt-parent = <&max77705>;
+			interrupts = <0>;
+		};
+
+		fuel-gauge@36 {
+			compatible = "maxim,max77705-battery";
+			reg = <0x36>;
+			maxim,rsns-microohm = <5000>;
+			monitored-battery = <&battery>;
+			power-supplies = <&max77705_charger>;
+			interrupt-parent = <&max77705>;
+			interrupts = <2>;
+		};
+
+		/*
+		 * The Type-C MCU inside the MAX77705. Its D+/D- switches
+		 * default to "open" after the reset TWRP's kernel gives it
+		 * on reboot; this routes them to the AP so the DWC3 gadget
+		 * is visible on the connector.
+		 */
+		muic@25 {
+			compatible = "samsung,s9p-max77705-muic";
+			reg = <0x25>;
+		};
+	};
+
+	ufs: ufs@11120000 {
+		compatible = "samsung,exynos9810-ufs";
+		reg = <0x11120000 0x200>,	/* standard HCI */
+		      <0x11121100 0x200>,	/* vendor specific HCI */
+		      <0x11110000 0x8000>,	/* UNIPRO */
+		      /*
+		       * Stock says 0x100 because the vendor only reaches the
+		       * protector through SMC calls. We program its region
+		       * registers directly, and those sit at 0x200..0x20c.
+		       */
+		      <0x11130000 0x300>,	/* UFS protector */
+		      <0x11124000 0x800>;	/* PHY (PMA) */
+		reg-names = "hci", "vs_hci", "unipro", "ufsp", "pma";
+		interrupts = <GIC_SPI 242 IRQ_TYPE_LEVEL_HIGH>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&ufs_rst_n &ufs_refclk_out>;
+		vcc-supply = <&ufs_vcc>;
+		clocks = <&ufs_clk_hci>, <&ufs_clk_unipro>;
+		clock-names = "GATE_UFS_EMBD", "UFS_EMBD";
+		/*
+		 * Required, even though nothing here is scaled: without
+		 * freq-table-hz, ufshcd_parse_clock_info() logs "freq-table-hz
+		 * property not specified" and returns before it builds
+		 * clk_list_head at all, so the variant driver then finds no
+		 * clocks and fails with -EINVAL. One pair of zeroes per clock
+		 * means "present, do not scale" -- which is the only honest
+		 * answer while these are fixed-clocks standing in for a CMU
+		 * driver.
+		 */
+		freq-table-hz = <0 0>, <0 0>;
+		/* UFS_PHY_CONTROL: bit 0 bypasses the PHY's isolation */
+		samsung,pmu-syscon = <&pmu_system_controller 0x724>;
+		/* FSYS0 sysreg: IO coherency bits, must match dma-coherent */
+		samsung,sysreg = <&sysreg_fsys0 0x700 0x300 0x300>;
+		/* Stock DT value. Revision 5 has no alternative refclk path. */
+		hw-rev = <5>;
+		samsung,pmd-attr-lane = /bits/ 8 <2>;
+		samsung,pmd-attr-gear = /bits/ 8 <3>;
+		dma-coherent;
+		/*
+		 * Disabled by default for the same reason as the GPU: without a
+		 * CMU driver nothing here knows whether sboot left FSYS0 clocked,
+		 * and a read into a gated block hangs the bus silently instead of
+		 * failing. The build turns it on with UFS=1.
+		 */
+		status = "disabled"; /* UFS-STATUS */
+	};
+};
+
+/*
+ * Mali-G72 MP18. sboot leaves the G3D power domain off, so the domain has to
+ * come up through the PMU before any register in the block answers -- and a
+ * read into an unpowered block is a bus hang, not an error. The node therefore
+ * starts disabled and the build turns it on (GPU=1) once the rest of the boot
+ * is known good.
+ */
+&soc {
+	/*
+	 * DECON0 plus the six DPU_DMA channels. sboot leaves DECON scanning
+	 * out the boot framebuffer through DSIM0 with the panel configured;
+	 * the s9p-decon driver finds that window and takes the scanout over.
+	 * While the node is off, the simple framebuffer in /chosen serves the
+	 * display instead; the build switches with DECON=1.
+	 */
+	decon@16030000 {
+		compatible = "samsung,exynos9810-decon";
+		reg = <0x16030000 0x10000>,	/* DECON0 + blender windows */
+		      <0x16070000 0x7000>;	/* DPU_DMA common + IDMA channels
+						 * 0..5 at 0x16071000+0x1000*ch */
+		interrupts = <GIC_SPI 182 IRQ_TYPE_LEVEL_HIGH>,	/* frame start */
+			     <GIC_SPI 183 IRQ_TYPE_LEVEL_HIGH>,	/* frame done */
+			     <GIC_SPI 188 IRQ_TYPE_LEVEL_HIGH>;	/* extra */
+		status = "disabled"; /* DECON-STATUS */
+	};
+
+	pd_g3d: power-domain@14064040 {
+		/*
+		 * Own driver: the vendor sequence drives the always-on
+		 * CMU_G3D block around the PMU write and has EL3 restore the
+		 * domain's TrustZone protection afterwards. The generic
+		 * exynos5433-pd (four-bit LOCAL_PWR_CFG, which this is) does
+		 * only the PMU part, and the first GPU register access then
+		 * ends in an SError.
+		 */
+		compatible = "samsung,exynos9810-g3d-pd";
+		reg = <0x14064040 0x8>,		/* PMU EMBEDDED_G3D_CONFIGURATION/STATUS */
+		      <0x17400000 0x2000>,	/* CMU_G3D: PLL_G3D, muxes, dividers */
+		      <0x14060000 0x5000>;	/* PMU: vendor G3D low-power prerequisites */
+		#power-domain-cells = <0>;
+		label = "G3D";
+	};
+
+	gpu: gpu@17500000 {
+		compatible = "samsung,exynos9810-mali", "arm,mali-bifrost";
+		reg = <0x17500000 0x5000>;
+		interrupts = <GIC_SPI 282 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 281 IRQ_TYPE_LEVEL_HIGH>,
+			     <GIC_SPI 283 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "job", "mmu", "gpu";
+		clocks = <&g3d_clk>;
+		clock-names = "core";
+		operating-points-v2 = <&gpu_opp_table>;
+		power-domains = <&pd_g3d>;
+		status = "disabled"; /* GPU-STATUS */
+
+		/*
+		 * The stock DVFS points this port has validated. The voltage
+		 * is the same 950 mV at every step on purpose: s9p-g3d holds
+		 * BUCK6 there, because the lower stock voltages are what made
+		 * Panfrost throw DATA_INVALID_FAULTs. What the lower steps buy
+		 * is dynamic power and heat, which is the part that matters
+		 * when the compositor needs a few milliseconds of GPU a frame.
+		 *
+		 * The table has to be a child of the GPU node, not a sibling.
+		 * fw_devlink treats operating-points-v2 as a supplier link, and
+		 * a standalone table node never gets a driver -- measured, that
+		 * held the GPU's probe back until the deferred-probe timeout
+		 * expired 14 seconds into the boot, by which time gdm had
+		 * already started the session without a render node and the
+		 * desktop fell over. As a child the link is internal and the
+		 * GPU probes immediately.
+		 */
+		gpu_opp_table: opp-table {
+			compatible = "operating-points-v2";
+
+			opp-260000000 {
+				opp-hz = /bits/ 64 <260000000>;
+				opp-microvolt = <950000>;
+			};
+			opp-455000000 {
+				opp-hz = /bits/ 64 <455000000>;
+				opp-microvolt = <950000>;
+			};
+			opp-572000000 {
+				opp-hz = /bits/ 64 <572000000>;
+				opp-microvolt = <950000>;
+			};
+		};
+	};
+};
+
+&{/} {
+	/*
+	 * The G3D PLL as a clock, provided by s9p-g3d. Describing it as a
+	 * fixed 26 MHz clock (which is what the mux reads out of reset) left
+	 * Panfrost with no operating points, so it never built a devfreq and
+	 * the PLL stayed at its 572 MHz maximum for the whole uptime -- the
+	 * GPU drew full power while the desktop was idle.
+	 */
+	g3d_clk: clock-g3d {
+		compatible = "samsung,exynos9810-g3d-clock";
+		#clock-cells = <0>;
+		clock-output-names = "g3d";
+	};
+};
+
+/*
+ * PCIe channel 0: the WiFi root complex (BCM4361). Channel 1 at 0x116b0000
+ * belongs to the modem and is not described here.
+ *
+ * No clock driver: the FSYS1/CMU gates the block sits behind are opened by
+ * the global clock-gates node above (register list in its comment). The PHY
+ * is not a struct phy provider either; the driver replays Samsung's CAL
+ * sequence (pci-exynos9810_cal.c, channel 0) through the phy/pcs windows
+ * and the ELBI reset lines, after releasing the PHY's PMU isolation.
+ *
+ * use-cache-coherency = true in Samsung's tree: the FSYS1 sysreg snoop bits
+ * (+0x700 [9:8], set sharable by the driver) put this master in the SSK
+ * domain, hence dma-coherent. No dma-ranges: like the stock tree this RC
+ * passes endpoint DMA through untranslated (PCI address = physical RAM
+ * address); the device is 32-bit DMA capable and the sub-4 GB banks cover
+ * it.
+ *
+ * Legacy INTx only, like the stock tree (use-msi = "false"): the BCM4361
+ * firmware does not signal MSI. INTA-D of the endpoint map onto the port's
+ * own interrupt-controller child; the driver dispatches them from the
+ * ELBI pulse status behind the one GIC line.
+ *
+ * The node starts disabled: a read into a gated, unpowered block is a bus
+ * hang, not an error, and PERST# drives a module. The build turns it on
+ * with WLAN=1.
+ */
+&soc {
+	sysreg_fsys1: syscon@11410000 {
+		compatible = "samsung,exynos9810-fsys1-sysreg", "syscon";
+		/* size from the stock DT; covers +0x700 snoop and +0x1044 PHY window */
+		reg = <0x11410000 0x1200>;
+	};
+
+	pcie_wlan: pcie@116a0000 {
+		compatible = "samsung,exynos9810-pcie";
+		reg = <0x116a0000 0x1000>,	/* elbi */
+		      <0x116d0000 0x1000>,	/* phy (PMA) */
+		      <0x116c0000 0x1fc>,	/* pcs */
+		      <0x11700000 0x1000>,	/* dbi */
+		      <0x127fe000 0x2000>;	/* config window */
+		reg-names = "elbi", "phy", "pcs", "dbi", "config";
+		interrupts = <GIC_SPI 253 IRQ_TYPE_LEVEL_HIGH>;
+		interrupt-names = "intr";
+		#address-cells = <3>;
+		#size-cells = <2>;
+		device_type = "pci";
+		/* stock tree: 16 MB MEM window, identity mapped, no I/O window */
+		ranges = <0x82000000 0x0 0x11800000 0x11800000 0x0 0xff0000>;
+		#interrupt-cells = <1>;
+		interrupt-map-mask = <0 0 0 0x7>;
+		interrupt-map = <0 0 0 1 &pcie_wlan_intc 0>,
+				<0 0 0 2 &pcie_wlan_intc 1>,
+				<0 0 0 3 &pcie_wlan_intc 2>,
+				<0 0 0 4 &pcie_wlan_intc 3>;
+		num-lanes = <1>;
+		max-link-speed = <2>;		/* Gen2 */
+		samsung,pmu-syscon = <&pmu_system_controller>;
+		samsung,fsys-sysreg = <&sysreg_fsys1>;
+		perst-gpios = <&gpf2 2 GPIO_ACTIVE_LOW>;
+		enable-gpios = <&gpg0 5 GPIO_ACTIVE_HIGH>;	/* WL_REG_ON, 100 ms before power-on */
+		pinctrl-names = "default";
+		pinctrl-0 = <&pcie0_clkreq &pcie0_perst>;
+		/*
+		 * Not dma-coherent: with the property set, the dongle read
+		 * stale RAM for every host-to-dongle ring item (each one came
+		 * back as ring status BADOPTION) while its own writes to the
+		 * host arrived fine. Cache maintenance around DMA costs little
+		 * at this link's data rates.
+		 */
+		status = "disabled"; /* WLAN-STATUS */
+
+		pcie_wlan_intc: legacy-interrupt-controller {
+			interrupt-controller;
+			#address-cells = <0>;
+			#interrupt-cells = <1>;
+		};
+	};
+};
+
+&oscclk {
+	clock-frequency = <26000000>;
+};
+
+&pmu_system_controller {
+	/*
+	 * sboot reads its boot target out of INFORM3 (PMU + 0x80c) using
+	 * Samsung's sec_reboot magic; INFORM2 has to say "this was a reset",
+	 * or the bootloader drops into low-power charging instead.
+	 */
+	reboot-mode {
+		compatible = "syscon-reboot-mode";
+		offset = <0x080c>;
+		mode-normal = <0x12345670>;
+		mode-recovery = <0x12345674>;
+		mode-download = <0x12345671>;
+		mode-bootloader = <0x1234567d>;
+	};
+};
+
+/* I2C pin groups, straight from the stock device tree (function 2, no pull). */
+&pinctrl_peric0 {
+	hsi2c10_bus: hsi2c10-bus-pins {
+		samsung,pins = "gpp1-4", "gpp1-5";
+		samsung,pin-function = <2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+};
+
+&pinctrl_cmgp {
+	hsi2c40_bus: hsi2c40-bus-pins {
+		samsung,pins = "gpm14-0", "gpm15-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+};
+
+/* PCIe channel 0 pins, straight from the stock device tree (FSYS1 banks). */
+&pinctrl_fsys1 {
+	pcie0_clkreq: pcie0-clkreq-pins {
+		samsung,pins = "gpf2-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_2>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV3>;
+	};
+
+	/* PERST#: clamped low (= asserted) from pinctrl apply time on */
+	pcie0_perst: pcie0-perst-pins {
+		samsung,pins = "gpf2-2";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_OUTPUT>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV3>;
+	};
+};
+
+&pinctrl_alive {
+	tsp_irq: tsp-irq-pins {
+		samsung,pins = "gpa1-0";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+
+	pmic_irq: pmic-irq-pins {
+		samsung,pins = "gpa1-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_NONE>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+
+	key_power: key-power-pins {
+		samsung,pins = "gpa2-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+
+	key_voldown: key-voldown-pins {
+		samsung,pins = "gpa0-4";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+
+	key_volup: key-volup-pins {
+		samsung,pins = "gpa0-3";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+
+	key_wink: key-wink-pins {
+		samsung,pins = "gpa0-6";
+		samsung,pin-function = <EXYNOS_PIN_FUNC_EINT>;
+		samsung,pin-pud = <EXYNOS_PIN_PULL_UP>;
+		samsung,pin-drv = <EXYNOS5420_PIN_DRV_LV1>;
+	};
+};

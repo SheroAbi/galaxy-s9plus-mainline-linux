@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Set a CPU cluster PLL of the Exynos 9810 (no cpufreq driver yet; sboot leaves
+both clusters at ~1.05 GHz). Voltage first through ACPM, then OSC mux, PLL
+relock, mux back. Run pinned to the *other* cluster.
+
+    s9p-cpuclk big    208 2 0 0x80    # M3  2704 MHz @ 1100 mV (BUCK2)
+    s9p-cpuclk little 138 2 0 0x70    # A55 1794 MHz @ 1000 mV (BUCK3)
+    s9p-cpuclk gpu    286 13 0 0x68   # G72  572 MHz @ 950 mV (BUCK6; vendor style: FIN/P = 2 MHz, S = 0)
+Vendor tables (cmucal-node.c): big 1478=455/4/1, 1893=437/6/0, 2327=358/4/0;
+little 1150=354/4/1, 1499=173/3/0, 1850=427/6/0. Skips when already set."""
+import ctypes, mmap, os, subprocess, sys, time
+fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
+def reg(addr):
+    m = mmap.mmap(fd, 0x1000, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=addr & ~0xfff)
+    return ctypes.c_uint32.from_address(ctypes.addressof(ctypes.c_uint32.from_buffer(m)) + (addr & 0xfff)), m
+cl = sys.argv[1]                    # "big" (CPUCL1, M3), "little" (CPUCL0, A55) or "gpu" (PLL_G3D)
+CON0, MUX, BUCK = {"big": (0x1d100120, 0x1d101000, "0x20"),
+                   "little": (0x1d000140, 0x1d00100c, "0x23"),
+                   "gpu": (0x17400140, None, "0x2b")}[cl]
+M, P, S = (int(x) for x in sys.argv[2:5])
+vsel = int(sys.argv[5], 0)
+con0, _m1 = reg(CON0); mux, _m2 = reg(MUX) if MUX else (None, None)
+if ((con0.value >> 16) & 0x3ff, (con0.value >> 8) & 0x3f, con0.value & 7) == (M, P, S):
+    print("%s already at M=%d P=%d S=%d" % (cl, M, P, S)); sys.exit(0)
+print("before: con0=%08x mux=%08x -> %d MHz" % (con0.value, mux.value if mux is not None else 0, 26 * ((con0.value >> 16) & 0x3ff) // ((con0.value >> 8) & 0x3f) // (1 << (con0.value & 7))))
+print(subprocess.run(["s9p-acpm", "write", "1", BUCK, hex(vsel)], capture_output=True, text=True).stdout.strip()[:40])
+time.sleep(0.005)
+if mux is not None:
+    mux.value = 1                       # OSCCLK while the PLL relocks
+    while mux.value & (1 << 16): pass   # BUSY
+    v = con0.value & ~((1 << 31) | (0x3ff << 16) | (0x3f << 8) | 7)
+else:                                   # G3D: the bypass mux is MUX_SEL bit 4 of CON0
+    con2, _m4 = reg(CON0 + 8)           # PLL_CON2_PLL_G3D: with sboot's 0x10000001 the
+    con2.value = 0x30000003             # PLL never relocks; the vendor on-sequence value does
+    con0.value = con0.value & ~(1 << 4)
+    lock, _m3 = reg(CON0 - 0x140)       # PLL_LOCKTIME_PLL_G3D
+    lock.value = 150 * P
+    v = con0.value & ~((1 << 31) | (0x3ff << 16) | (0x3f << 8) | 7 | (1 << 4))
+con0.value = v                      # PLL disabled
+con0.value = v | (M << 16) | (P << 8) | S
+con0.value = v | (1 << 31) | (M << 16) | (P << 8) | S
+t = time.time()
+while not (con0.value & (1 << 29)):
+    if time.time() - t > 0.5: print("PLL not stable!"); sys.exit(1)
+if mux is not None:
+    mux.value = 0
+    while mux.value & (1 << 16): pass
+    print("after:  con0=%08x mux=%08x -> %d MHz" % (con0.value, mux.value, 26 * M // P // (1 << S)))
+else:
+    con0.value = con0.value | (1 << 4)
+    print("after:  con0=%08x -> %d MHz" % (con0.value, 26 * M // P // (1 << S)))

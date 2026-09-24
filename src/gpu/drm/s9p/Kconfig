@@ -1,0 +1,14 @@
+config DRM_S9P_DECON
+	tristate "DECON scanout takeover for the Galaxy S9+ (Exynos 9810)"
+	depends on DRM && OF && ARM64
+	select DRM_GEM_DMA_HELPER
+	select DRM_KMS_HELPER
+	default y
+	help
+	  Takes over the DECON0 scanout Samsung's bootloader leaves running
+	  behind DSIM0 with the panel fully configured. Dumb buffers are
+	  contiguous, so a page flip is one base-address write into the
+	  window's DPU_DMA channel plus the shadow update request; the
+	  frame-start interrupt provides vblank. No DECON or DSIM state is
+	  programmed. The driver name is "exynos" so Mesa pairs it with
+	  Panfrost through kmsro.

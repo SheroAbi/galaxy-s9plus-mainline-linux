@@ -1,0 +1,12 @@
+[Unit]
+Description=S9+: no idle-only CPU/GPU voltage reduction
+DefaultDependencies=no
+Before=sysinit.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/s9p-stability
+RemainAfterExit=yes
+
+[Install]
+WantedBy=sysinit.target

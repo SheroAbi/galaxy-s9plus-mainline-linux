@@ -1,0 +1,12 @@
+[Unit]
+Description=S9+: reconnect Wi-Fi that NetworkManager gave up on
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+ExecStart=/usr/local/sbin/s9p-wifi-guard
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

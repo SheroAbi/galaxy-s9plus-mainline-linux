@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""Power profiles for the Galaxy S9+ mainline port.
+
+    s9p-power performance|balanced|power-saver   apply and remember
+    s9p-power status                              what is in effect
+    s9p-power --daemon                            (systemd) apply the saved
+        profile, then follow GNOME's power mode (power-profiles-daemon)
+        whenever that service is running
+
+A profile is a ceiling on the two CPU clusters (cpufreq scaling_max_freq),
+a ceiling on the Mali G72 (s9p_g3d max_khz) and the Wi-Fi power-save
+setting. The thermal caps in the kernel stay underneath either way. The M3
+cores are never taken offline: on this SoC they cannot be brought back
+without a reboot.
+"""
+import glob
+import os
+import subprocess
+import sys
+
+STATE = "/etc/default/s9p-power"
+LITTLE = "/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq"
+BIG = "/sys/devices/system/cpu/cpufreq/policy4/scaling_max_freq"
+GPU = "/sys/module/s9p_g3d/parameters/max_khz"
+GPU_CUR = "/sys/module/s9p_g3d/parameters/cur_khz"
+
+PROFILES = {
+    "performance": dict(little=1794000, big=2704000, gpu=572000, wifi_ps="off"),
+    "balanced":    dict(little=1794000, big=2704000, gpu=572000, wifi_ps="off"),
+    "power-saver": dict(little=1150500, big=1066000, gpu=455000, wifi_ps="on"),
+}
+
+
+def write(path, value):
+    try:
+        with open(path, "w") as f:
+            f.write(str(value))
+    except OSError as e:
+        print(f"s9p-power: {path}: {e}", file=sys.stderr)
+
+
+def read(path, default="?"):
+    try:
+        with open(path) as f:
+            return f.read().strip()
+    except OSError:
+        return default
+
+
+def apply(profile):
+    p = PROFILES[profile]
+    write(LITTLE, p["little"])
+    write(BIG, p["big"])
+    write(GPU, p["gpu"])
+    for dev in [os.path.basename(os.path.dirname(x)) for x in glob.glob("/sys/class/net/*/phy80211")]:
+        subprocess.run(["iw", "dev", dev, "set", "power_save", p["wifi_ps"]],
+                       stderr=subprocess.DEVNULL)
+
+
+def save(profile):
+    with open(STATE, "w") as f:
+        f.write(f"PROFILE={profile}\n")
+
+
+def saved():
+    for line in read(STATE, "").splitlines():
+        if line.startswith("PROFILE="):
+            v = line.split("=", 1)[1].strip()
+            if v in PROFILES:
+                return v
+    return "balanced"
+
+
+def status():
+    print(f"profile:  {saved()}")
+    print(f"little:   max {int(read(LITTLE, '0')) // 1000} MHz, now "
+          f"{int(read('/sys/devices/system/cpu/cpufreq/policy0/cpuinfo_cur_freq', '0')) // 1000} MHz")
+    print(f"big:      max {int(read(BIG, '0')) // 1000} MHz, now "
+          f"{int(read('/sys/devices/system/cpu/cpufreq/policy4/cpuinfo_cur_freq', '0')) // 1000} MHz")
+    print(f"gpu:      max {int(read(GPU, '0')) // 1000} MHz, now {int(read(GPU_CUR, '0')) // 1000} MHz")
+    cur = read("/sys/class/power_supply/max170xx_battery/current_now", "")
+    if cur:
+        print(f"battery:  {int(cur) / 1000:.0f} mA, {read('/sys/class/power_supply/max170xx_battery/capacity')} %")
+
+
+def daemon():
+    apply(saved())
+    try:
+        import gi
+        gi.require_version("Gio", "2.0")
+        from gi.repository import Gio, GLib
+    except (ImportError, ValueError):
+        return
+    bus = Gio.bus_get_sync(Gio.BusType.SYSTEM, None)
+    names = ["org.freedesktop.UPower.PowerProfiles", "net.hadess.PowerProfiles"]
+    paths = {"org.freedesktop.UPower.PowerProfiles": "/org/freedesktop/UPower/PowerProfiles",
+             "net.hadess.PowerProfiles": "/net/hadess/PowerProfiles"}
+
+    def follow(name):
+        try:
+            proxy = Gio.DBusProxy.new_sync(bus, Gio.DBusProxyFlags.NONE, None, name,
+                                           paths[name], name, None)
+        except GLib.Error:
+            return None
+        def changed(_proxy, props, _inv):
+            v = props.lookup_value("ActiveProfile", None)
+            if v is not None and v.get_string() in PROFILES:
+                apply(v.get_string())
+                save(v.get_string())
+        proxy.connect("g-properties-changed", changed)
+        v = proxy.get_cached_property("ActiveProfile")
+        if v is not None and v.get_string() in PROFILES:
+            apply(v.get_string())
+            save(v.get_string())
+        return proxy
+
+    proxies = {}
+
+    def owner_changed(_c, _s, _p, _i, _sig, params):
+        name, _old, new = params.unpack()
+        if name in names:
+            proxies[name] = follow(name) if new else None
+
+    bus.signal_subscribe("org.freedesktop.DBus", "org.freedesktop.DBus", "NameOwnerChanged",
+                         "/org/freedesktop/DBus", None, Gio.DBusSignalFlags.NONE, owner_changed)
+    for n in names:
+        proxies[n] = follow(n)
+    GLib.MainLoop().run()
+
+
+def main():
+    arg = sys.argv[1] if len(sys.argv) > 1 else "status"
+    if arg in PROFILES:
+        apply(arg)
+        save(arg)
+        status()
+    elif arg == "status":
+        status()
+    elif arg == "--daemon":
+        daemon()
+    else:
+        print(__doc__)
+        sys.exit(2)
+
+
+if __name__ == "__main__":
+    main()

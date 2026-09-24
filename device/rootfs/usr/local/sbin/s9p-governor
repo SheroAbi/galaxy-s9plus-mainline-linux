@@ -1,0 +1,330 @@
+#!/usr/bin/env python3
+"""DVFS governor for the Exynos 9810 under mainline 7.1, where there is no
+cpufreq/devfreq driver yet. Every 250 ms it reads CPU utilisation per cluster
+(/proc/stat), GPU activity (panfrost job interrupt rate) and the TMU, picks a
+step from the tables below and programs PLL + PMIC rail directly:
+
+  up:   voltage first (ACPM write to the S2MPS18 buck), then PLL relock
+  down: PLL first, then voltage
+
+The big cluster follows Samsung's core-count policy: 2704 MHz with one busy
+M3 core, 2314 with two, 1794 with three or four (four at 2704 reset the SoC). Above HOT degrees every
+cluster is capped to its second step, above CRIT to its lowest.
+
+Voltages are the vendor-typical DVFS values minus a small margin; every step
+was stress-tested at least once. Tune with the STEP_* tables.
+
+    s9p-governor            # run (systemd unit)
+    s9p-governor status     # print current steps, load and temperatures
+"""
+import ctypes, mmap, os, signal, sys, time
+
+PERIOD = 0.25
+DEBUG = os.environ.get("S9P_GOV_DEBUG") == "1"
+MAXSTEP = {kv.split("=")[0]: int(kv.split("=")[1]) for kv in os.environ.get("S9P_GOV_MAX", "").split(",") if "=" in kv}
+# Since the 7.1 kernel has s9p-cpufreq (same tables, busy-core policy and
+# voltage ordering in-kernel), the governor scales the GPU only and keeps
+# the TMU thermal caps, applying the CPU side through scaling_max_freq.
+# S9P_GOV_CPU=1 puts the CPU clusters back under this script (no cpufreq).
+CPU_ON = os.environ.get("S9P_GOV_CPU", "0") == "1"
+
+
+def cap_cpu(big_khz, little_khz):
+    for pol, khz in (("policy4", big_khz), ("policy0", little_khz)):
+        try:
+            with open("/sys/devices/system/cpu/cpufreq/%s/scaling_max_freq" % pol, "w") as f:
+                f.write(str(khz))
+        except OSError:
+            pass
+HOT, CRIT = 75, 85           # C, hottest big-core/GPU sensor
+UP, DOWN = 0.70, 0.35        # utilisation thresholds per cluster
+HOLD_UP, HOLD_DOWN = 1, 6    # periods of evidence before stepping
+
+# (MHz, M, P, S, buck code) -- code = (mV - 300) / 6.25
+# Official Exynos 9810 (SM-G965F) points. Samsung caps the M3 cluster by the
+# number of active cores: 2704 MHz with one, 2314 with two, 1794 with three or
+# four. BIG_CAP_BY_BUSY below encodes that.
+STEP_BIG = [(1066, 246, 3, 1, 0x40),    # 700 mV (sboot 694)
+            (1469, 452, 4, 1, 0x50),    # 800 mV
+            (1794, 138, 2, 0, 0x5c),    # 875 mV
+            (2314, 358, 4, 0, 0x7c),    # 1075 mV (1000 froze with two cores)
+            (2704, 208, 2, 0, 0x88)]    # 1150 mV
+STEP_LITTLE = [(1053, 243, 3, 1, 0x4b),  # 768 mV (sboot)
+               (1499, 173, 3, 0, 0x58),  # 850 mV (tested)
+               (1794, 138, 2, 0, 0x70)]  # 1000 mV (900 reset with four cores)
+STEP_GPU = [(260, 160, 4, 2, 0x48),      # 750 mV
+            (455, 455, 26, 0, 0x58),     # 850 mV (FIN/P 1 MHz)
+            (572, 286, 13, 0, 0x68)]     # 950 mV (tested)
+BIG_CAP_BY_BUSY = {0: 4, 1: 4, 2: 3, 3: 2, 4: 2}   # busy M3 cores -> highest allowed step index
+
+CLUSTERS = {
+    "big":    dict(con0=0x1d100120, mux=0x1d101000, buck="0x20", steps=STEP_BIG, cpus=range(4, 8)),
+    "little": dict(con0=0x1d000140, mux=0x1d00100c, buck="0x23", steps=STEP_LITTLE, cpus=range(0, 4)),
+    "gpu":    dict(con0=0x17400140, mux=None, buck="0x2b", steps=STEP_GPU, cpus=()),
+}
+
+fd = os.open("/dev/mem", os.O_RDWR | os.O_SYNC)
+_maps = {}
+
+
+def reg(addr):
+    page = addr & ~0xfff
+    if page not in _maps:
+        m = mmap.mmap(fd, 0x1000, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=page)
+        _maps[page] = (m, ctypes.addressof(ctypes.c_uint32.from_buffer(m)))
+    return ctypes.c_uint32.from_address(_maps[page][1] + (addr & 0xfff))
+
+
+# --- ACPM IPC to the S2MPS18 (same protocol as s9p-acpm, in-process so that
+# the governor is the only runtime writer and a SIGTERM never lands mid-message)
+MBOX, SRAM, SRAM_SIZE, INITDATA = 0x14100000, 0x02039000, 0x30000, 0x7f00
+INTGR0, INTCR1, INTSR1 = 0x08, 0x20, 0x28
+_mbox_m = mmap.mmap(fd, 0x1000, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=MBOX)
+_sram_m = mmap.mmap(fd, SRAM_SIZE, mmap.MAP_SHARED, mmap.PROT_READ | mmap.PROT_WRITE, offset=SRAM)
+_mbox = ctypes.addressof(ctypes.c_uint32.from_buffer(_mbox_m))
+_sram = ctypes.addressof(ctypes.c_uint32.from_buffer(_sram_m))
+r32 = lambda b, o: ctypes.c_uint32.from_address(b + o).value
+def w32(b, o, v): ctypes.c_uint32.from_address(b + o).value = v & 0xffffffff
+_fw = [r32(_sram, INITDATA + 4 * i) for i in range(8)]
+_ch = None
+for i in range(_fw[6]):                          # ipc_ap_max channels
+    base = _fw[2] + i * 18 * 4
+    f = [r32(_sram, base + 4 * k) for k in range(18)]
+    if f[0] == 2:                                # MFD channel
+        _ch = dict(id=2, tx=(f[4], f[5], f[6]), rx=(f[10], f[11], f[12]), q_len=f[13], elem=f[14])
+_seq = [int(time.time()) & 0x3f or 1]
+_busy = [False]
+
+
+def acpm_mfd(func, reg_no, val=0, mask=0):
+    """func 0 read, 1 write, 2 update; returns (ret, value)."""
+    ch = _ch
+    _busy[0] = True
+    try:
+        rear_o, front_o, base_o = ch["tx"]
+        front = r32(_sram, front_o); nxt = (front + 1) % ch["q_len"]
+        t0 = time.time()
+        while nxt == r32(_sram, rear_o):
+            if time.time() - t0 > 0.5: return (-1, 0)
+        _seq[0] = _seq[0] % 63 + 1
+        cmd = [((1 << 8) | (reg_no & 0xff)) | ((_seq[0] & 0x3f) << 16),
+               (func & 0xff) | ((val & 0xff) << 8) | ((mask & 0xff) << 16), 0, 0]
+        for i, w in enumerate(cmd): w32(_sram, base_o + ch["elem"] * front + 4 * i, w)
+        w32(_sram, front_o, nxt)
+        w32(_mbox, INTGR0, (1 << ch["id"]) << 16)
+        rear_o, front_o, base_o = ch["rx"]
+        t0 = time.time()
+        while True:
+            if r32(_mbox, INTSR1) & (1 << ch["id"]):
+                front = r32(_sram, front_o); rear = r32(_sram, rear_o); i = rear
+                while i != front:
+                    w0 = r32(_sram, base_o + ch["elem"] * i)
+                    if ((w0 >> 16) & 0x3f) == _seq[0]:
+                        w1 = r32(_sram, base_o + ch["elem"] * i + 4)
+                        if i != rear:
+                            for k in range(ch["elem"] // 4):
+                                w32(_sram, base_o + ch["elem"] * i + 4 * k, r32(_sram, base_o + ch["elem"] * rear + 4 * k))
+                        rear = (rear + 1) % ch["q_len"]; w32(_sram, rear_o, rear)
+                        if rear == r32(_sram, front_o):
+                            w32(_mbox, INTCR1, 1 << ch["id"])
+                        return ((w1 >> 24) & 0xff, (w1 >> 8) & 0xff)
+                    i = (i + 1) % ch["q_len"]
+            if time.time() - t0 > 0.5:
+                print("acpm: no answer for reg %#x" % reg_no, flush=True); return (-1, 0)
+            time.sleep(0.0002)
+    finally:
+        _busy[0] = False
+
+
+def acpm_write(buck, code):
+    ret, _ = acpm_mfd(1, int(buck, 0), code)
+    if ret != 0:
+        print("acpm write %s=%#x failed (%d)" % (buck, code, ret), flush=True)
+
+
+def current_step(c):
+    v = reg(c["con0"]).value
+    mps = ((v >> 16) & 0x3ff, (v >> 8) & 0x3f, v & 7)
+    for i, st in enumerate(c["steps"]):
+        if st[1:4] == mps:
+            return i
+    return -1
+
+
+def set_pll(c, st):
+    _, M, P, S, _ = st
+    con0 = reg(c["con0"])
+    if c["mux"] is not None:
+        mux = reg(c["mux"])
+        mux.value = 1                                   # OSC while relocking
+        t0 = time.time()
+        while mux.value & (1 << 16):
+            if time.time() - t0 > 0.1: print("mux %s stuck busy" % name_of(c), flush=True); break
+        v = con0.value & ~((1 << 31) | (0x3ff << 16) | (0x3f << 8) | 7)
+    else:
+        reg(c["con0"] + 8).value = 0x30000003           # PLL_CON2: needed to relock at all
+        con0.value = con0.value & ~(1 << 4)             # bypass to OSC
+        reg(c["con0"] - 0x140).value = 150 * P          # PLL_LOCKTIME
+        v = con0.value & ~((1 << 31) | (0x3ff << 16) | (0x3f << 8) | 7 | (1 << 4))
+    if DEBUG: print("  pll %s: mux done, con0=%08x" % (name_of(c), con0.value), flush=True)
+    con0.value = v
+    con0.value = v | (M << 16) | (P << 8) | S
+    con0.value = v | (1 << 31) | (M << 16) | (P << 8) | S
+    time.sleep(0.0005)                                  # >> LOCKTIME * P / FIN
+    if c["mux"] is not None:
+        mux.value = 0
+        t0 = time.time()
+        while mux.value & (1 << 16):
+            if time.time() - t0 > 0.1: print("mux %s stuck busy" % name_of(c), flush=True); break
+    else:
+        con0.value = con0.value | (1 << 4)
+    if not (con0.value & (1 << 29)):
+        print("PLL %s not stable after relock, con0=%08x" % (name_of(c), con0.value), flush=True)
+
+
+def name_of(c):
+    return next(n for n, v in CLUSTERS.items() if v is c)
+
+
+def go(name, target):
+    c = CLUSTERS[name]
+    cur = current_step(c)
+    if cur == target:
+        return
+    st = c["steps"][target]
+    print("%s: %d -> %d MHz (%d mV)" % (name, c["steps"][cur][0] if cur >= 0 else 0, st[0], 300 + st[4] * 6.25), flush=True)
+    if cur < 0 or st[4] > c["steps"][cur][4]:
+        acpm_write(c["buck"], st[4]); time.sleep(0.001); set_pll(c, st)
+    else:
+        set_pll(c, st); time.sleep(0.001); acpm_write(c["buck"], st[4])
+
+
+def temps(base, sensors):
+    out = []
+    for s in sensors:
+        trim = reg(base + s * 4).value
+        e1, e2 = trim & 0x1ff, (trim >> 9) & 0x1ff
+        off, first = (0x40, 0) if s < 2 else (0x44, 2) if s < 5 else (0x48, 5)
+        code = (reg(base + off).value >> (9 * (s - first))) & 0x1ff
+        out.append((code - e1) * 60 // (e2 - e1) + 25 if e2 > e1 else code - e1 + 25)
+    return out
+
+
+def hottest():
+    return max(temps(0x10070000, [1, 2, 3, 4, 6]) + temps(0x10074000, [1]))
+
+
+def cpu_times():
+    out = {}
+    for l in open("/proc/stat"):
+        if l.startswith("cpu") and l[3].isdigit():
+            f = l.split()
+            idle = int(f[4]) + int(f[5])
+            out[int(f[0][3:])] = (sum(int(x) for x in f[1:]), idle)
+    return out
+
+
+def gpu_jobs():
+    for l in open("/proc/interrupts"):
+        if "panfrost-job" in l:
+            return sum(int(x) for x in l.split()[1:9])
+    return 0
+
+
+def status():
+    print("steps:", {n: (CLUSTERS[n]["steps"][current_step(CLUSTERS[n])][0] if current_step(CLUSTERS[n]) >= 0 else "?")
+                     for n in CLUSTERS})
+    print("temps: big", temps(0x10070000, [1, 2, 3, 4, 6]), "little", temps(0x10070000, [5]), "gpu", temps(0x10074000, [1]))
+
+
+_stop = [False]
+
+
+def _on_term(signum, frame):
+    _stop[0] = True
+
+
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "status":
+        return status()
+    signal.signal(signal.SIGTERM, _on_term)
+    signal.signal(signal.SIGINT, _on_term)
+    # start from the lowest step everywhere, so a wrong boot state is known
+    for n in [n for n in ("gpu", "big", "little") if CPU_ON or n == "gpu"]:
+        go(n, 0)
+    prev, prev_jobs = cpu_times(), gpu_jobs()
+    want = {n: 0 for n in CLUSTERS}
+    evid = {n: 0 for n in CLUSTERS}
+    t_last = time.time()
+    while not _stop[0]:
+        time.sleep(PERIOD)
+        now, jobs = cpu_times(), gpu_jobs()
+        dt = time.time() - t_last; t_last = time.time()
+        util = {}
+        for cpu in now:
+            (t1, i1), (t0, i0) = now[cpu], prev[cpu]
+            util[cpu] = 1.0 - (i1 - i0) / max(1, t1 - t0)
+        prev = now
+        job_rate = (jobs - prev_jobs) / dt; prev_jobs = jobs
+        temp = hottest()
+        loads = {"big": sorted((util[c] for c in CLUSTERS["big"]["cpus"]), reverse=True),
+                 "little": sorted((util[c] for c in CLUSTERS["little"]["cpus"]), reverse=True)}
+        for n in (["big", "little"] if CPU_ON else []):
+            steps = CLUSTERS[n]["steps"]
+            top = max(loads[n]) if loads[n] else 0
+            cur = want[n]
+            if top >= UP and cur < len(steps) - 1:
+                evid[n] = evid[n] + 1 if evid[n] >= 0 else 1
+                if evid[n] >= HOLD_UP:
+                    cur += 1; evid[n] = 0
+            elif top <= DOWN and cur > 0:
+                evid[n] = evid[n] - 1 if evid[n] <= 0 else -1
+                if -evid[n] >= HOLD_DOWN:
+                    cur -= 1; evid[n] = 0
+            else:
+                evid[n] = 0
+            want[n] = cur
+        # GPU: job interrupt rate as the only load signal we have
+        g = want["gpu"]
+        if job_rate > 150 and g < 2:
+            g += 1
+        elif job_rate > 30 and g < 1:
+            g = 1
+        elif job_rate < 10 and g > 0:
+            evid["gpu"] -= 1
+            if -evid["gpu"] >= HOLD_DOWN:
+                g -= 1; evid["gpu"] = 0
+        want["gpu"] = g
+        # caps: multi-core, thermal
+        target = {n: min(v, MAXSTEP.get(n, 9)) for n, v in want.items()
+                  if CPU_ON or n == "gpu"}
+        if CPU_ON:
+            busy_big = sum(1 for u in loads["big"] if u >= 0.5)
+            target["big"] = min(target["big"], BIG_CAP_BY_BUSY[busy_big])
+        if CPU_ON:
+            if temp >= CRIT:
+                target = {n: 0 for n in target}
+            elif temp >= HOT:
+                target = {n: min(v, 1) for n, v in target.items()}
+        else:
+            # the kernel owns the CPU clocks; throttle through cpufreq
+            if temp >= CRIT:
+                cap_cpu(1066000, 650000)
+                target = {n: 0 for n in target}
+            elif temp >= HOT:
+                cap_cpu(2327000, 1499333)
+                target = {n: min(v, 1) for n, v in target.items()}
+            else:
+                cap_cpu(2704000, 1794000)
+        if DEBUG:
+            print("t=%d big=%s little=%s jobs/s=%.0f want=%s target=%s" % (temp, [round(u, 2) for u in loads["big"]],
+                  [round(u, 2) for u in loads["little"]], job_rate, want, target), flush=True)
+        for n, v in target.items():
+            go(n, v)
+    for n in [n for n in ("gpu", "big", "little") if CPU_ON or n == "gpu"]:
+        go(n, 0)
+    print("governor stopped, clocks parked at step 0", flush=True)
+
+
+if __name__ == "__main__":
+    main()

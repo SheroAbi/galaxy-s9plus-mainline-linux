@@ -1,0 +1,3 @@
+MODE=ncm
+# ncm = Windows 11, Linux and macOS all have a class driver
+# ecm / rndis = fallbacks, tried automatically if ncm will not bind

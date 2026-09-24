@@ -1,0 +1,15 @@
+#!/bin/sh
+# Charger input limit only.
+# 
+# The touch LDO power-cycle now happens in the kernel (s9p-acpm, at subsys
+# initcall, before the I2C drivers probe) -- faster, and free of the
+# mailbox races this script used to have with in-kernel cpufreq.
+C=/sys/class/power_supply/max77705-charger
+i=0
+while [ "$i" -lt 40 ]; do
+	[ -e "$C/input_current_limit" ] && break
+	i=$((i + 1))
+	sleep 0.25
+done
+[ -e "$C/input_current_limit" ] && echo 500000 > "$C/input_current_limit"
+exit 0

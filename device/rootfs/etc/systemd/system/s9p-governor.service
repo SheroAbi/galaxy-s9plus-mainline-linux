@@ -1,0 +1,15 @@
+[Unit]
+Description=S9+ mainline port: userspace GPU steps and thermal CPU caps (s9p-governor)
+After=s9p-touch-power.service
+
+[Service]
+EnvironmentFile=-/etc/default/s9p-governor
+ExecStart=/usr/local/sbin/s9p-governor
+Restart=always
+RestartSec=3
+Nice=-10
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

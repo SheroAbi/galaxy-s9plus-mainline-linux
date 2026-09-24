@@ -1,0 +1,18 @@
+#!/bin/sh
+# NetworkManager gives up for good after a failed rekey ("no secrets: no
+# agents") and never retries. Bring the last-used Wi-Fi back when it has been
+# down for two checks, unless Wi-Fi was switched off on purpose.
+down=0
+while sleep 30; do
+	[ "$(nmcli -t radio wifi)" = enabled ] || { down=0; continue; }
+	st=$(nmcli -g GENERAL.STATE dev show wlp1s0 2>/dev/null | cut -d' ' -f1)
+	case "$st" in
+	100|50|60|70|80|90) down=0 ;;
+	*) down=$((down + 1)) ;;
+	esac
+	if [ $down -ge 2 ]; then
+		con=$(nmcli -t -f UUID,TYPE,TIMESTAMP con show | awk -F: '$2=="802-11-wireless"{print $3, $1}' | sort -rn | head -1 | cut -d' ' -f2)
+		[ -n "$con" ] && echo "wlp1s0 state $st, reconnecting $con" && nmcli con up uuid "$con" >/dev/null 2>&1
+		down=0
+	fi
+done

@@ -1,0 +1,196 @@
+#!/bin/sh
+# Init for the mainline 7.1 probe image.
+#
+# There is no serial port and no USB gadget on this kernel yet, so the only way
+# a result gets back to the host is the ramoops window that the stock 4.9 kernel
+# in TWRP can read. Everything interesting is printed to /dev/kmsg, which pstore
+# mirrors into persistent RAM as it happens, so even a hang leaves a log.
+#
+# Anything that touches a block the bootloader may have gated is opt-in through
+# s9p.poke= on the kernel command line: a read into a gated block hangs the bus
+# silently, and that must never be the default.
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+
+/bin/busybox --install -s /bin 2>/dev/null
+mkdir -p /proc /sys /dev /run /tmp
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev 2>/dev/null
+mount -t tmpfs tmpfs /run 2>/dev/null
+
+echo 8 > /proc/sys/kernel/printk
+echo 1 > /proc/sys/kernel/sysrq
+
+log() {
+	echo "S9P| $*" > /dev/kmsg 2>/dev/null
+	echo "S9P| $*"
+}
+
+poke() {
+	case ",$(sed -n 's/.*s9p\.poke=\([^ ]*\).*/\1/p' /proc/cmdline)," in
+	*",$1,"*) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+# Deadman. A read into a gated block wedges the CPU that issues it, and that
+# CPU never comes back -- but the others keep running, so a plain shell can
+# still reset the machine. Without this the phone just sits there and needs a
+# human with a key combo.
+(
+	sleep 120
+	echo "S9P| DEADMAN fired: something wedged, resetting" > /dev/kmsg
+	sync
+	echo b > /proc/sysrq-trigger
+) &
+
+log "===== S9+ MAINLINE $(uname -r) ====="
+
+# --- arm the way back before touching anything risky --------------------------
+# INFORM2 = SEC_POWER_RESET, INFORM3 = SEC_RESET_REASON_RECOVERY. TWRP sits on
+# RECOVERY, so arming recovery means any reset from here on -- a panic, the
+# deadman, a power-key reset -- comes up in a shell instead of in this kernel
+# again. Without INFORM2 sboot would come up in low-power charging mode.
+# The PMU is always on, so these two are safe to touch unconditionally.
+devmem 0x14060808 32 0x12345678 2>/dev/null
+devmem 0x1406080c 32 0x12345674 2>/dev/null
+log "next boot armed: INFORM2=$(devmem 0x14060808 32 2>/dev/null) INFORM3=$(devmem 0x1406080c 32 2>/dev/null)"
+
+log "model:   $(cat /proc/device-tree/model 2>/dev/null)"
+log "cmdline: $(cat /proc/cmdline)"
+log "cpus:    $(grep -c ^processor /proc/cpuinfo)  mem: $(awk '/MemTotal/{printf "%d MB", $2/1024}' /proc/meminfo)"
+log "dri:     $(echo $(ls /dev/dri 2>/dev/null))"
+log "fb:      $(echo $(ls -d /dev/fb* 2>/dev/null))"
+log "input:   $(echo $(ls /dev/input 2>/dev/null))"
+log "block:   $(echo $(ls -d /dev/sd* /dev/mmcblk* 2>/dev/null))"
+
+log "drivers with a device bound:"
+for d in /sys/bus/platform/drivers/*/; do
+	set -- "$d"*/
+	case "$1" in *'*'*) continue ;; esac
+	log "  $(basename "$d"): $(for x in "$@"; do basename "$x"; done | tr '\n' ' ')"
+done
+log "devices with no driver:"
+for d in /sys/bus/platform/devices/*/; do
+	[ -e "$d/driver" ] || log "  $(basename "$d")"
+done
+
+if poke ufs; then
+	# HCI_1US_TO_CNT_VAL holds whatever mclk/1MHz the last driver to touch
+	# UFS programmed, which is how the real UNIPRO rate gets read off the
+	# hardware while there is no CMU driver.
+	log "--- UFS register read (s9p.poke=ufs) ---"
+	sync
+	log "ufs 1us_to_cnt: $(devmem 0x1112110c 32)"
+	log "ufs force_hcs:  $(devmem 0x111211b4 32)"
+	log "ufs hci caps:   $(devmem 0x11120000 32)"
+	log "ufs hci ver:    $(devmem 0x11120008 32)"
+fi
+
+case " $(cat /proc/cmdline) " in
+*" s9p.storage_probe=1 "*)
+	log "--- UFS storage probe (read-only, no journal replay) ---"
+	i=0
+	while [ "$i" -lt 16 ]; do
+		[ -b /dev/sda25 ] && break
+		i=$((i + 1))
+		sleep 0.5
+	done
+	if [ -b /dev/sda ]; then
+		log "UFS up after $i half-seconds"
+		log "size:   $(cat /sys/block/sda/size 2>/dev/null) sectors"
+		log "model:  $(cat /sys/block/sda/device/model 2>/dev/null)"
+		par=/sys/module/ufs_exynos9810/parameters
+		log "fmp:    want=$(cat $par/fmp 2>/dev/null) result=$(cat $par/fmp_result 2>/dev/null) sg=$(cat $par/sg_entry 2>/dev/null)"
+		log "maxseg: $(cat /sys/block/sda/queue/max_segments 2>/dev/null) hw_sectors=$(cat /sys/block/sda/queue/max_hw_sectors_kb 2>/dev/null)k"
+		log "segsize: $(cat /sys/block/sda/queue/max_segment_size 2>/dev/null) sectors_kb=$(cat /sys/block/sda/queue/max_sectors_kb 2>/dev/null)k"
+		# Smallest first, growing. A read that wedges the controller never
+		# returns and cannot be killed, so each one gets a bounded wait and
+		# the verdict is collected in a variable. Everything is printed in
+		# one line and the kernel is stopped straight after, because the
+		# SCSI error handler would otherwise flood the 4K pstore record and
+		# push these results out of it.
+		# Every failure so far had two tags in the doorbell at once, and a
+		# 64K read still hangs even when the 32K cap splits it into two
+		# commands. So serialise the queue and see whether that is it.
+		log "qdepth: $(cat /sys/block/sda/device/queue_depth 2>/dev/null) segsz=$(cat /sys/block/sda/queue/max_segment_size 2>/dev/null)"
+		verdict=""
+		hung=0
+		for kb in 4 16 64 256 1024; do
+			if [ "$hung" = 1 ]; then
+				verdict="$verdict ${kb}k=skipped"
+				continue
+			fi
+			dd if=/dev/sda bs=${kb}K count=1 iflag=direct of=/dev/null 				>/dev/null 2>&1 &
+			pid=$!
+			n=0
+			while [ "$n" -lt 20 ] && kill -0 "$pid" 2>/dev/null; do
+				n=$((n + 1))
+				sleep 0.25
+			done
+			if kill -0 "$pid" 2>/dev/null; then
+				verdict="$verdict ${kb}k=HANG(seg=$(cat $par/seg_last 2>/dev/null),bytes=$(cat $par/bytes_last 2>/dev/null))"
+				hung=1
+			else
+				wait "$pid" && verdict="$verdict ${kb}k=ok(seg=$(cat $par/seg_last 2>/dev/null))" ||
+					verdict="$verdict ${kb}k=err"
+			fi
+		done
+		log "READTEST:$verdict"
+		if [ "$hung" = 1 ]; then
+			log "===== stopping: a read wedged the controller ====="
+			sync
+			echo c > /proc/sysrq-trigger
+		fi
+		mkdir -p /mnt
+		if grep -q '^PARTNAME=USERDATA$' /sys/class/block/sda25/uevent &&
+		   mount -t ext4 -o ro,noload /dev/sda25 /mnt; then
+			log "USERDATA mounted: $(echo $(ls /mnt))"
+			log "hostname in rootfs: $(cat /mnt/etc/hostname 2>/dev/null)"
+			log "rootfs release: $(cat /mnt/etc/os-release | tr '\n' ' ')"
+			log "rootfs systemd SHA256: $(sha256sum /mnt/usr/lib/systemd/systemd)"
+			log "rootfs mount: $(awk '$2 == "/mnt" {print $0}' /proc/mounts)"
+			umount /mnt
+			log "===== storage verified, stopping ====="
+			sync
+			echo c > /proc/sysrq-trigger
+		else
+			log "USERDATA identity check or read-only mount failed"
+		fi
+	else
+		log "NO UFS BLOCK DEVICE"
+	fi
+	;;
+esac
+
+if poke gpu; then
+	# The G3D power domain is off after sboot, and a read into an unpowered
+	# block hangs instead of failing -- so this is opt-in, and every step is
+	# flushed to persistent RAM before it is taken.
+	log "--- G3D power-on test (s9p.poke=gpu) ---"
+	devmem 0x14064040 32 0xf 2>/dev/null
+	sleep 1
+	log "g3d status: $(devmem 0x14064044 32 2>/dev/null)   (0xf = on)"
+	sync
+	log "about to read GPU_ID at 0x17500000"
+	sync
+	log "GPU_ID:      $(devmem 0x17500000 32 2>/dev/null)"
+	log "GPU L2_FEAT: $(devmem 0x17500004 32 2>/dev/null)"
+	log "GPU AS_PRES: $(devmem 0x17500018 32 2>/dev/null)"
+fi
+
+if [ -x /extra-probe ]; then
+	log "--- extra probe ---"
+	/extra-probe 2>&1 | while read -r l; do log "$l"; done
+fi
+
+log "===== report complete, panicking to flush pstore ====="
+sync
+sleep 1
+echo c > /proc/sysrq-trigger
+
+# Should never get here.
+log "sysrq panic did not fire, falling back to reboot"
+sleep 2
+reboot -f
+while :; do sleep 10; done

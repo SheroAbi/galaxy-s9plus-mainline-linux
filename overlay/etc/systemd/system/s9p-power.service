@@ -1,0 +1,16 @@
+[Unit]
+Description=S9+ power profile (CPU/GPU ceilings, follows GNOME power mode)
+# No ordering against multi-user.target: this unit is pulled in BY that
+# target, so ordering after it is a cycle, and systemd breaks cycles by
+# dropping a job -- here systemd-user-sessions, which leaves /run/nologin
+# in place and no desktop session can start.
+After=systemd-user-sessions.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/s9p-power --daemon
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

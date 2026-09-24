@@ -1,0 +1,19 @@
+#!/usr/bin/env python3
+"""Read 32-bit registers through /dev/mem.  s9p-mem 0x10050000 0x10050008 ..."""
+import mmap
+import os
+import sys
+
+out = []
+with open("/dev/mem", "rb", buffering=0) as f:
+    for arg in sys.argv[1:]:
+        addr = int(arg, 0)
+        page = addr & ~0xfff
+        try:
+            m = mmap.mmap(f.fileno(), 0x1000, mmap.MAP_SHARED, mmap.PROT_READ, offset=page)
+            v = int.from_bytes(m[addr - page:addr - page + 4], "little")
+            m.close()
+            out.append(f"{addr:08x}={v:08x}")
+        except Exception as e:  # noqa: BLE001
+            out.append(f"{addr:08x}=ERR({e})")
+print(" ".join(out))

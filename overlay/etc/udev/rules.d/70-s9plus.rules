@@ -1,0 +1,4 @@
+# Touchscreen and keys are plain evdev; make them readable by the seat
+SUBSYSTEM=="input", KERNEL=="event*", TAG+="uaccess"
+# Framebuffer access for X without root
+SUBSYSTEM=="graphics", KERNEL=="fb0", MODE="0660", GROUP="video"

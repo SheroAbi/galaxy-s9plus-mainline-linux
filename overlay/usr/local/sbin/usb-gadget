@@ -1,0 +1,102 @@
+#!/bin/bash
+# Galaxy S9+ USB gadget: serial console (ACM) plus one network function.
+#
+# NCM is the default. Windows 11 no longer ships an RNDIS driver, and Samsung's
+# configfs RNDIS function rejects writes to host_addr with ENODEV on this tree,
+# so RNDIS is only kept as a last resort. Every step is non-fatal: if the
+# network function will not bind, the plain serial console still comes up, which
+# is the only way back into a device with no working display or network.
+set -u
+G=/sys/kernel/config/usb_gadget/s9plus
+MODE="${1:-$(sed -n 's/^MODE=//p' /etc/default/usb-gadget 2>/dev/null)}"
+MODE="${MODE:-ncm}"
+
+mountpoint -q /sys/kernel/config || mount -t configfs configfs /sys/kernel/config
+
+set_attr() {
+    printf '%s' "$2" > "$1" 2>/dev/null || echo "note: cannot set ${1##*/}" >&2
+}
+
+teardown() {
+    [ -d "$G" ] || return 0
+    echo "" > "$G/UDC" 2>/dev/null || true
+    rm -f "$G/os_desc/c.1" 2>/dev/null || true
+    find "$G/configs" -maxdepth 2 -type l -delete 2>/dev/null || true
+    rmdir "$G"/configs/*/strings/* "$G"/configs/* 2>/dev/null || true
+    rmdir "$G"/functions/* 2>/dev/null || true
+    rmdir "$G"/strings/* 2>/dev/null || true
+    rmdir "$G" 2>/dev/null || true
+}
+
+if [ "$MODE" = stop ]; then
+    teardown
+    exit 0
+fi
+
+# Samsung's built-in android gadget claims the UDC while probing.
+for a in /sys/class/android_usb/android*/enable; do
+    [ -w "$a" ] && echo 0 > "$a" 2>/dev/null || true
+done
+
+UDC=
+for _ in $(seq 30); do
+    UDC=$(ls /sys/class/udc 2>/dev/null | head -1)
+    [ -n "$UDC" ] && break
+    sleep 1
+done
+[ -n "$UDC" ] || { echo "no UDC available" >&2; exit 1; }
+
+build() {
+    local net="$1"
+    teardown
+    mkdir -p "$G/strings/0x409" "$G/configs/c.1/strings/0x409" || return 1
+    set_attr "$G/idVendor"        0x1d6b
+    set_attr "$G/idProduct"       0x0104
+    set_attr "$G/bcdUSB"          0x0200
+    set_attr "$G/bcdDevice"       0x0100
+    set_attr "$G/bDeviceClass"    0xef
+    set_attr "$G/bDeviceSubClass" 0x02
+    set_attr "$G/bDeviceProtocol" 0x01
+    set_attr "$G/strings/0x409/serialnumber" \
+        "S9PLUS-$(cat /sys/class/soc*/soc0/serial_number 2>/dev/null || echo 0001)"
+    set_attr "$G/strings/0x409/manufacturer" "Samsung"
+    set_attr "$G/strings/0x409/product"      "Galaxy S9+ (Linux)"
+    set_attr "$G/configs/c.1/strings/0x409/configuration" "console${net:+ + $net}"
+    set_attr "$G/configs/c.1/MaxPower" 500
+
+    mkdir -p "$G/functions/acm.usb0" || return 1
+    ln -sf "$G/functions/acm.usb0" "$G/configs/c.1/acm.usb0" || return 1
+
+    if [ -n "$net" ]; then
+        mkdir -p "$G/functions/$net.usb0" || return 1
+        # Fixed addresses stop the host from seeing a new NIC on every boot.
+        set_attr "$G/functions/$net.usb0/host_addr" 42:61:64:55:53:42
+        set_attr "$G/functions/$net.usb0/dev_addr"  42:61:64:55:53:43
+        if [ "$net" = rndis ]; then
+            set_attr "$G/os_desc/use" 1
+            set_attr "$G/os_desc/b_vendor_code" 0xcd
+            set_attr "$G/os_desc/qw_sign" MSFT100
+            set_attr "$G/functions/rndis.usb0/os_desc/interface.rndis/compatible_id" RNDIS
+            set_attr "$G/functions/rndis.usb0/os_desc/interface.rndis/sub_compatible_id" 5162001
+            ln -sf "$G/configs/c.1" "$G/os_desc/c.1" 2>/dev/null || true
+        fi
+        ln -sf "$G/functions/$net.usb0" "$G/configs/c.1/$net.usb0" || return 1
+    fi
+
+    echo "$UDC" > "$G/UDC" 2>/dev/null || return 1
+}
+
+tried=""
+for net in "$MODE" ncm ecm rndis ""; do
+    case " $tried " in *" ${net:-none} "*) continue ;; esac
+    case "$net" in ncm|ecm|rndis|"") ;; *) continue ;; esac
+    tried="$tried ${net:-none}"
+    if build "$net"; then
+        echo "usb gadget up: udc=$UDC net=${net:-none}"
+        exit 0
+    fi
+    echo "gadget with net=${net:-none} did not bind; trying the next one" >&2
+done
+teardown
+echo "no usable gadget configuration" >&2
+exit 1
