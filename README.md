@@ -1,137 +1,169 @@
-# Ubuntu on the Samsung Galaxy S9+
+# 📱 Ubuntu on the Samsung Galaxy S9+
 
-This is a Samsung Galaxy S9+ from 2018 that runs a real, current Linux: the
-mainline kernel 7.1 and an ordinary Ubuntu 24.04 with GNOME on Wayland. There
-is no Android underneath, no Halium, no container and no vendor Android
-drivers doing the work behind the scenes. The desktop is drawn by the phone's
-own Mali GPU through the open-source Panfrost driver, the screen is driven by
-a display driver written for this project, and the system lives on the
-phone's internal storage like on any other computer.
+**A real Ubuntu 24.04 desktop on the Galaxy S9+, on mainline Linux 7.1.**
+No Android underneath, no Halium, no container, no vendor blobs doing the work.
+Just a current kernel, GNOME on Wayland and your phone as a small Linux computer.
 
-Why would you want that? Because an old flagship in a drawer is a small,
-quiet, eight-core ARM64 computer with 6 GB of RAM, fast storage, Wi-Fi and a
-built-in battery that bridges power cuts. Many people rent a VPS to run a
-self-hosted AI agent, a bot, a home automation hub or a small web service.
-This phone can be that machine instead: it sits on your desk, it costs
-nothing per month, it draws a few watts, and your data stays at home. You
-reach it over SSH like any server, and it still has a touchscreen and a full
-desktop when you want to look at it. This repository shows, step by step,
-how to turn such a device into your own Linux machine, and the same way of
-working carries over to other old phones.
+- 🐧 **Mainline kernel:** Linux 7.1 plus this port's own drivers for storage, display, GPU clock, CPU frequency, PCIe Wi-Fi and USB.
+- 🖥️ **Full desktop:** GNOME on Wayland at the panel's native 1440x2960, 60 fps, rendered by the Mali GPU (Panfrost).
+- 💾 **Lives on the phone:** Ubuntu boots from the internal UFS storage like on any computer.
+- 📶 **Connected:** Wi-Fi, touch, battery and charging, and USB network + serial console on one cable.
+- 🔒 **Yours:** you build it yourself from public sources. No default password, root locked, SSH keys made on the phone.
+- 💸 **A free home server:** 8 cores, 6 GB RAM, a few watts, a built-in UPS. Run your bot, AI agent or home automation on it instead of renting a VPS.
 
-What makes this phone hard is its chip. The Exynos 9810 is Samsung's own
-design, and mainline Linux knows almost nothing about it: when this project
-started, the kernel could not even see the internal storage, so there was
-nowhere to boot a system from. There was no clock driver, no power
-management for the processor or the graphics core, no display driver, no
-PCIe for the Wi-Fi chip and no USB. Each of those had to be written or
-adapted, usually with nothing more than Samsung's old Android kernel source
-as a map and a phone that shows nothing at all when something goes wrong.
-
-It works now. The phone boots with all eight cores, mounts its Ubuntu root
-filesystem from the internal UFS storage, shows GNOME at the panel's full
-1440x2960 resolution at 60 frames per second, reacts to touch, connects to
-Wi-Fi, reports its battery and charging state, and can be reached over the
-USB cable as a network device and as a serial console. The CPU and GPU
-change their clock speed with the load and throttle themselves before they
-get too hot, and a hardware watchdog turns any hang into a reboot instead of
-a dead phone.
-
-You build the system yourself, from this repository and public sources
-only. The build produces a clean, ordinary Ubuntu: the same base system as
-the two sister projects for the Mi 9T and the Redmi 8, plus only the few
-files this phone's hardware needs. Nothing of ours is preinstalled. The
-extra features we built for our own use (power profiles, a flight recorder
-for debugging hangs, apt through the USB cable, the bring-up tools) are kept
-separate and marked as extras; you install them only if you want them. The
-image has no default password: you choose one when you build it, root is
-locked, and every phone creates its own SSH keys on its first boot.
-
-Some of the problems on the way were the kind that cost days. A mainline
-kernel did simply nothing, no message, no error, because Samsung's 2018
-bootloader still places the kernel by a header field that mainline stopped
-filling years ago, and then overwrites the first bytes of it. The graphics
-core faulted randomly until it turned out the bootloader leaves its supply
-voltage far too low. A mailbox to the power-management firmware seemed to
-work but never answered, because two ring buffers were swapped. Icons showed
-tiny stripes that were finally traced to a texture compression feature in
-the graphics driver. All of that is written down here in detail.
-
-Being honest about the limits matters. The processor cores cannot enter
-their deeper idle states yet, which costs battery. The phone cannot suspend
-and wake up again. There is no sound, no camera and no mobile network. About
-every second warm reboot hangs early and is rescued by the watchdog. This is
-a working Linux machine, not a finished phone.
-
-This repository is for anyone who owns a Galaxy S9+ (the Exynos model,
-SM-G965F) and wants to run Linux on it, and for anyone porting mainline Linux
-to another Exynos device. The Snapdragon version of the phone (SM-G965U) is
-a different device, and nothing here applies to it.
+> Only for the **Exynos** Galaxy S9+ (**SM-G965F**, star2lte). The Snapdragon
+> model (SM-G965U) is a different device and nothing here applies to it.
+> *(Hobby project, not affiliated with Samsung.)*
 
 ---
 
-## Technical overview
+## ✨ What works
+
+| Subsystem | State | Driver |
+|---|---|---|
+| Boot | all 8 cores | uniLoader shim + mainline 7.1.0 |
+| Storage | UFS 2.1, read/write, rootfs on `USERDATA` | `src/ufs/` (own) |
+| Display | 1440x2960 KMS, 60 fps to the panel | `src/gpu/drm/s9p/` (own) |
+| GPU | Mali-G72 via Panfrost, GNOME on Wayland | upstream panfrost + `src/soc/s9p-g3d.c` |
+| Touch | S6SY761 multi-touch | upstream `s6sy761` + ACPM rail setup |
+| Wi-Fi | BCM4361, `brcmfmac`, firmware embedded | `src/pci/pcie-exynos9810.c` (own) |
+| USB | serial console (ACM) + network (NCM) | `src/usb/phy-exynos9810-usbdrd.c` (own) |
+| Battery | MAX17042 gauge + MAX77705 charger in UPower; charging can be paused | upstream + `src/soc/max77705_charger.c` |
+| CPU / GPU clocks | both CPU clusters and the GPU scale with load, thermally capped | `src/cpufreq/`, `src/soc/s9p-g3d.c` (own) |
+| Watchdog | any hang becomes a reboot into TWRP instead of a dead phone | upstream `s3c2410_wdt` + PMU unmask |
+
+**Not working (yet):** deep CPU idle (costs battery), suspend, audio, camera,
+mobile network. About every second warm reboot hangs early and is rescued by
+the watchdog. This is a working Linux machine, not a finished phone.
+Details: [docs/06-known-issues.md](docs/06-known-issues.md).
+
+---
+
+## 🛠️ Build it yourself
+
+Everything is built from this repository and public sources. No image is
+downloaded from us.
+
+**You need:** a Galaxy S9+ (SM-G965F) with an **unlocked bootloader** and
+**TWRP 3.3.1-0** on `RECOVERY`, a **Linux** build host (Ubuntu 24.04 on a PC
+or in a VM; WSL2 works too, but neither Windows nor WSL is required) and `adb`.
+
+```bash
+git clone https://github.com/SheroAbi/galaxy-s9plus-mainline-linux.git
+cd galaxy-s9plus-mainline-linux
+
+# 1. one-time setup: build directory, cross toolchain + static busybox, kernel tree
+sudo scripts/build/setup_build.sh
+sudo scripts/build/toolchain.sh
+sudo scripts/build/fetch_mainline.sh
+
+# 2. the kernel, wrapped in uniLoader (needs the official TWRP image as a template)
+sudo scripts/build/build_stable.sh
+sudo TWRP_IMG=/path/to/twrp-3.3.1-0-star2lte.img \
+    scripts/build/pack_uniloader.sh dist/m71-<stamp> boot-s9plus.img
+
+# 3. the Ubuntu root filesystem (asks for your password)
+sudo image/build-image.sh
+```
+
+Good to know:
+- 📁 The kernel tree lives in `BUILD` (default `/mnt/build`, any directory works; `BUILD=/some/dir` to move it). See [docs/02-building.md](docs/02-building.md).
+- 🧰 No prebuilt tools needed: `toolchain.sh` fetches a **static** arm64 busybox from Ubuntu's archive, and the boot image and `dt.img` are written by the Python scripts in `scripts/build/`.
+- ⚠️ Flash the **uniLoader** image from `dist/uniloader/`. The raw `dist/m71-<stamp>/boot.img` does not boot on its own.
+
+---
+
+## 📲 Install
+
+Boot the phone into TWRP (Power + Volume-Up + Bixby) and connect it by USB:
+
+```bash
+# the root filesystem: resumable, every chunk checked, then read back whole
+python3 scripts/flash/flash_s9plus_rootfs_adb.py dist/image/s9plus-rootfs.img
+# the kernel: reboots only after BOOT reads back correctly
+python3 scripts/flash/flash_s9plus_boot_adb.py dist/uniloader/boot-s9plus.img
+```
+
+> ⚠️ **This erases all Android user data** (`USERDATA`). `RECOVERY` keeps
+> TWRP as the way back.
+
+**First boot:** the root filesystem grows to the whole partition, the phone
+makes its own SSH keys, and GNOME logs your user in. Over the USB cable the
+phone is `172.16.42.2`: give the PC's new USB network adapter `172.16.42.1/24`
+and `ssh <user>@172.16.42.2`. Wi-Fi is set up from the GNOME menu.
+Details: [docs/03-installing.md](docs/03-installing.md).
+
+---
+
+## 🧩 Extras (optional)
+
+Nothing of ours is preinstalled. These are installed on the phone only if you want them:
+
+```bash
+sudo extras/install.sh                    # list them
+sudo extras/install.sh power-profiles     # install one; --remove takes it out again
+```
+
+| Extra | What it does |
+|---|---|
+| [power-profiles](extras/power-profiles/) | CPU/GPU ceilings and Wi-Fi power save as three profiles, following GNOME's power mode |
+| [flight-recorder](extras/flight-recorder/) | every kernel message and a state line per minute, fsync'ed, for hunting hangs |
+| [usb-apt-proxy](extras/usb-apt-proxy/) | apt through a proxy on the PC the phone is cabled to |
+| [debug-tools](extras/debug-tools/) | the register, PMIC and clock tools from the bring-up |
+
+---
+
+## 🛟 Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| `qemu-aarch64-static: Could not open '/lib/ld-linux-aarch64.so.1'` | The busybox in `$BUILD/out` is dynamically linked. Get the static one: `python3 scripts/build/fetch_busybox.py $BUILD/out/busybox-arm64` |
+| `no build directory: /mnt/build` | Run `sudo scripts/build/setup_build.sh` first, or point `BUILD` at an existing directory. |
+| Odin/Heimdall start a session, then every write fails | `KG STATE: Prenormal` (Knox Guard). Boot Android online with a correct clock until it clears. See [docs/03-installing.md](docs/03-installing.md). |
+| Phone "hangs at the logo" or falls back to recovery | S-Boot rejected the image. Use the uniLoader image, never the raw `boot.img`. |
+| Black screen, no USB | Wrong device tree or a kernel panic. Reach TWRP with Power + Volume-Up + Bixby and flash a known-good image back. |
+| Wi-Fi drops after a failed rekey | `s9p-wifi-guard` reconnects after a minute; on weak 5 GHz pin the connection to 2.4 GHz. |
+
+---
+
+## 🔬 Under the hood
 
 ```
 SoC        Exynos 9810 (Samsung 10 nm, "Mongoose 3")
 CPU        4x Mongoose M3 @ 2704 MHz  +  4x Cortex-A55 @ 1794 MHz
 GPU        Mali-G72 MP18 @ 572 MHz, Panfrost + Mesa
 Display    1440x2960 AMOLED, DECON + MIPI DSI in command mode
-Memory     6 GB LPDDR4X
-Storage    64 GB UFS 2.1
+Memory     6 GB LPDDR4X        Storage    64 GB UFS 2.1
 Kernel     mainline 7.1.0 + this port's drivers
 Userland   Ubuntu 24.04 LTS arm64, GNOME on Wayland
 ```
 
-The clocks above are hardware maxima. The validated default ceilings are
+The clocks above are hardware maxima; the validated default ceilings are
 2327 MHz M3 / 1499 MHz A55, with lower busy-core and thermal caps.
 
-### Boot chain
+**Boot chain:** Samsung S-Boot (unlocked, never reflashed) → `BOOT`:
+uniLoader shim + mainline Image + DTB → built-in initramfs (arms the recovery
+magic, finds `USERDATA`) → `switch_root` into Ubuntu on `/dev/sda25`.
+`RECOVERY` keeps TWRP 3.3.1-0 as the way back.
 
-```
-Samsung S-Boot (unlocked, never reflashed)
-  -> BOOT partition: uniLoader shim + mainline Image + DTB
-    -> built-in initramfs: arms the recovery magic, finds USERDATA
-      -> switch_root into Ubuntu on USERDATA (/dev/sda25)
-RECOVERY keeps TWRP 3.3.1-0 as the way back.
-```
-
-### What works
-
-| Subsystem | State | Driver |
-|---|---|---|
-| Boot | all 8 cores, `maxcpus=8` | uniLoader shim + mainline 7.1.0 |
-| Storage | UFS 2.1, read/write, rootfs on `USERDATA` | `src/ufs/` (own) |
-| Display | 1440x2960 KMS, 60 fps to the panel | `src/gpu/drm/s9p/` (own) |
-| GPU | Mali-G72 via Panfrost, `renderD128`, GNOME on Wayland | upstream panfrost + `src/soc/s9p-g3d.c` |
-| Touch | S6SY761 multi-touch | upstream `s6sy761` + ACPM rail setup |
-| Wi-Fi | BCM4361, `brcmfmac`, firmware embedded | `src/pci/pcie-exynos9810.c` (own) |
-| USB | configfs gadget: ACM console + NCM network | `src/usb/phy-exynos9810-usbdrd.c` (own) |
-| Battery | MAX17042 gauge + MAX77705 charger in UPower; charging can be stopped via `charge_behaviour` | upstream + `src/soc/max77705_charger.c` + `src/soc/s9p-max77705-muic.c` |
-| CPU DVFS | both clusters, thermal capped | `src/cpufreq/s9p-cpufreq.c` (own) |
-| GPU DVFS | devfreq, 260 / 455 / 572 MHz | `src/soc/s9p-g3d.c` (own) |
-| GPU idle power | full G3D domain off/on | `src/soc/s9p-g3d-pd.c` (own) |
-| Watchdog | cluster-1 WDT, armed from the first boot instruction | upstream `s3c2410_wdt` + PMU unmask |
-| Panel power | display off cuts the panel supply, not just the backlight | `src/gpu/drm/s9p/s9p-decon.c` |
-| Not working | CPU idle states, suspend, audio, camera, modem | [docs/06-known-issues.md](docs/06-known-issues.md) |
-
-### Measured
+### 📈 Measured
 
 | | before this round of work | after |
 |---|---|---|
-| Scanout buffer allocation errors | continuous | 0 |
 | Frames per second reaching the panel | CPU copy path | 60 |
 | `gnome-shell` CPU at an idle desktop | 12.4 % | 1.2 % |
 | Panfrost GPU faults after a full load run | 16 in 2 min | 0 |
-| SoC temperature under GPU load | 66 °C | 58 °C |
-| SoC temperature at idle | 52 °C | 43–46 °C |
+| SoC temperature under GPU load / at idle | 66 °C / 52 °C | 58 °C / 43–46 °C |
 | glmark2 score (1080x1920) | 840 | 1025 |
 | Panfrost probe time | 14.3 s | 0.9 s |
 
-How each was measured: [docs/05-performance.md](docs/05-performance.md) and
+How each was measured: [docs/05-performance.md](docs/05-performance.md),
 [docs/07-validation.md](docs/07-validation.md).
 
-### Hurdles that were overcome
+### 🧗 Hurdles that were overcome
+
+<details>
+<summary>The problems that cost days, and what fixed them (click to open)</summary>
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -155,80 +187,30 @@ How each was measured: [docs/05-performance.md](docs/05-performance.md) and
 | Early boot died before any console | 52-bit VA/PA fallback runs before a console exists; the M3 lacks LVA/LPA2 | 48-bit VA and PA |
 | Rare hard hangs on an idle desktop | idle-only voltage reductions on CPU and GPU | both off by default; an optional flight recorder logs the last minute |
 
-### Build your own system
+</details>
 
-Everything is built from this repository and public sources; no image is
-downloaded from us. You need the phone with an unlocked bootloader and TWRP
-3.3.1-0 on `RECOVERY`, a Linux build host (Ubuntu 24.04, a VM or WSL2
-works), an aarch64 cross toolchain and `adb`.
+### 🗂️ Repository layout
 
-```bash
-# 1. the kernel (one-time setup, then the validated configuration)
-scripts/build/setup_build.sh && scripts/build/toolchain.sh && scripts/build/fetch_mainline.sh
-scripts/build/build_stable.sh
-TWRP_IMG=/path/to/twrp-3.3.1-0-star2lte.img \
-    scripts/build/pack_uniloader.sh dist/m71-<stamp> boot-s9plus.img
-
-# 2. the Ubuntu root filesystem: asks for your password
-sudo image/build-image.sh
-
-# 3. flash from TWRP (the scripts check the device and read everything back)
-python scripts/flash/flash_s9plus_rootfs_adb.py dist/image/s9plus-rootfs.img
-python scripts/flash/flash_s9plus_boot_adb.py dist/uniloader/boot-s9plus.img
-```
-
-What the image contains: the common base system of all three phone projects
-([`image/common/README.md`](image/common/README.md): Ubuntu 24.04, GNOME,
-Firefox, SSH, no default password, root locked, SSH keys made on the phone),
-plus this phone's hardware layer in [`device/`](device/). Do not flash the
-raw `m71-<stamp>/boot.img`: a direct boot without uniLoader fails early.
-Details: [docs/02-building.md](docs/02-building.md),
-[docs/03-installing.md](docs/03-installing.md).
-
-### Extras (optional, never installed by the image build)
-
-On the phone, from a checkout of this repository:
-
-```bash
-sudo extras/install.sh                    # list them
-sudo extras/install.sh power-profiles     # install one; --remove takes it out again
-```
-
-| Extra | What it does |
-|---|---|
-| [power-profiles](extras/power-profiles/) | CPU/GPU ceilings and Wi-Fi power save as three profiles, following GNOME's power mode |
-| [flight-recorder](extras/flight-recorder/) | every kernel message and a state line per minute, fsync'ed, for hunting hangs |
-| [usb-apt-proxy](extras/usb-apt-proxy/) | apt through a proxy on the PC the phone is cabled to |
-| [debug-tools](extras/debug-tools/) | the register, PMIC and clock tools from the bring-up |
-
-### Repository layout
-
-```
+```text
 src/                 the drivers this port adds to the mainline tree
   ufs/               UFS 2.1 host controller + Samsung's PHY calibration
   gpu/drm/s9p/       DECON scanout driver (KMS)
-  soc/               ACPM mailbox, G3D clock and power domain, clock gates,
-                     MUIC, MAX77705 charger
-  cpufreq/           both CPU clusters, with the thermal cap
-  pci/               PCIe root complex for the Wi-Fi chip
-  usb/               USB 2.0 PHY
+  soc/               ACPM mailbox, G3D clock and power domain, clock gates, MUIC, charger
+  cpufreq/  pci/  usb/   CPU clusters, PCIe root complex for Wi-Fi, USB 2.0 PHY
   mainline-dts/      the board device tree
-  reference/         pinned upstream file the build checks against
 bootloader/uniLoader/  the shim that starts a mainline kernel on this S-Boot
 image/               build the Ubuntu root filesystem (common/ is shared by all three phones)
 device/              initramfs init scripts, and the hardware layer of the image (base/)
 extras/              optional features, installed on request
-scripts/
-  build/             build the kernel and the boot image (env.sh: locations)
-  flash/             write boot and rootfs to the phone from TWRP
+scripts/build/       kernel, boot image, DTBH table, busybox (env.sh: locations)
+scripts/flash/       write boot and rootfs to the phone from TWRP
 firmware/            BCM4361 firmware and the wireless regulatory database
-branding/            boot logo
 docs/                everything above in detail
 ```
 
 `dist/` is where builds land; it is ignored by git.
 
-### Documentation
+### 📚 Documentation
 
 | | |
 |---|---|
@@ -240,26 +222,42 @@ docs/                everything above in detail
 | [06-known-issues.md](docs/06-known-issues.md) | what does not work, and what was tried |
 | [07-validation.md](docs/07-validation.md) | the CPU/GPU validation runs and their limits |
 
-### Acknowledgements
+---
+
+## 🙏 Acknowledgements
 
 Starting a mainline kernel on the Exynos 9810 at all rests on
-[uniLoader](https://github.com/ivoszbg/uniLoader) and on the mainline
-Exynos 9810 work of its community, which already carried the SoC and
-Galaxy S9 board support that this port builds on.
+[uniLoader](https://github.com/ivoszbg/uniLoader) and on the mainline Exynos
+9810 work of its community, which already carried the SoC and Galaxy S9 board
+support this port builds on. `mkdtbh.py` follows
+[dtbtool-exynos](https://github.com/dsankouski/dtbtool-exynos).
 
-### Related projects
+**Same idea, other phones:**
+[Xiaomi Mi 9T (Snapdragon 730)](https://github.com/SheroAbi/mi9t-mainline-linux) ·
+[Xiaomi Redmi 8 (Snapdragon 439)](https://github.com/SheroAbi/redmi8-mainline-linux)
 
-The same idea, Ubuntu on mainline Linux, on two other phones:
+---
 
-* [Xiaomi Mi 9T (Snapdragon 730)](https://github.com/SheroAbi/mi9t-mainline-linux)
-* [Xiaomi Redmi 8 (Snapdragon 439)](https://github.com/SheroAbi/redmi8-mainline-linux)
+## 🇩🇪 Kurz auf Deutsch
 
-### Licence
+Dieses Projekt bringt ein **echtes Ubuntu 24.04 mit GNOME** auf das Galaxy S9+
+(Exynos, SM-G965F): aktueller Mainline-Kernel 7.1, kein Android darunter.
+Display, GPU, internes UFS, WLAN, Touch, Akku und USB laufen, dafür wurden
+eigene Treiber geschrieben. Ideal als stromsparender Heimserver statt VPS.
+Gebaut wird alles selbst aus öffentlichen Quellen auf einem Linux-Rechner
+(Windows/WSL nicht nötig): `setup_build.sh` → `toolchain.sh` →
+`fetch_mainline.sh` → `build_stable.sh` → `pack_uniloader.sh` →
+`image/build-image.sh`, dann per TWRP + adb flashen. **Achtung:** Die
+Android-Nutzerdaten werden gelöscht.
+
+---
+
+## 📄 License
 
 GPL-2.0-only, the same as the kernel these drivers are built into. See
 [LICENSE](LICENSE), and [THIRD-PARTY.md](THIRD-PARTY.md) for the vendored and
-redistributed components. `bootloader/uniLoader/` is a third-party project
-and carries its own licence.
+redistributed components. `bootloader/uniLoader/` is a third-party project and
+carries its own licence.
 
 This is a hobby project and comes without any warranty. Flashing a phone can
 go wrong; you do it at your own risk.
