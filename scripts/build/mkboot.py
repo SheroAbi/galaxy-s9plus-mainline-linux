@@ -1,13 +1,19 @@
-"""Build an Android boot image, copying the layout of a reference image.
+"""Build a Samsung Android boot image (header v0 with a dt.img section).
 
-The build normally goes through mkbootimg inside WSL, but the stub is
-assembled in a different distro than the one holding the build image, and the
-format is simple enough that bouncing between them is not worth it. Copying
-every header field from an image the phone has already accepted means the only
-thing that differs is the payload under test.
+Two ways to fill the header:
+
+  * from a reference image (--ref): every header field is copied from an
+    image the phone has already accepted, so the only thing that differs is
+    the payload under test. pack_uniloader.sh uses this with TWRP.
+  * from scratch: the load addresses come from --base and the offsets, like
+    the mkbootimg of Samsung's kernel trees (which knows --dt). build71.sh
+    uses this, so the build needs no prebuilt mkbootimg; the result is
+    byte-identical to what that mkbootimg wrote for the same inputs.
 
   mkboot.py --ref <boot.img> --kernel <Image> [--dt <dt.img>]
             [--ramdisk <f>] [--cmdline "..."] -o <out.img>
+  mkboot.py --kernel <Image> --ramdisk <f> [--dt <dt.img>] [--cmdline "..."]
+            [--base 0x10000000] [--kernel_offset 0x8000] [--pagesize 2048] ... -o <out.img>
 """
 import argparse
 import hashlib
@@ -41,30 +47,54 @@ def pad(data, page):
 
 
 def main():
+    num = lambda v: int(v, 0)  # noqa: E731
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ref", required=True, help="image to copy header fields from")
+    ap.add_argument("--ref", help="image to copy header fields from")
     ap.add_argument("--kernel", required=True)
     ap.add_argument("--dt")
     ap.add_argument("--ramdisk")
     ap.add_argument("--cmdline")
     ap.add_argument("-o", "--output", required=True)
+    # only without --ref; the defaults are the ones build71.sh has always used
+    ap.add_argument("--base", type=num, default=0x10000000)
+    ap.add_argument("--kernel_offset", type=num, default=0x00008000)
+    ap.add_argument("--ramdisk_offset", type=num, default=0x01000000)
+    ap.add_argument("--second_offset", type=num, default=0x00F00000)
+    ap.add_argument("--tags_offset", type=num, default=0x00000100)
+    ap.add_argument("--pagesize", type=num, default=2048)
+    ap.add_argument("--board", default="")
     args = ap.parse_args()
 
-    ref = Path(args.ref).read_bytes()
-    assert ref[:8] == b"ANDROID!", "reference is not an Android boot image"
-    page = struct.unpack_from("<I", ref, 36)[0]
-
     kernel = Path(args.kernel).read_bytes()
-    if args.ramdisk:
-        ramdisk = Path(args.ramdisk).read_bytes()
-    else:
-        # The reference image's own ramdisk, so nothing else changes.
-        ks, rs = struct.unpack_from("<I", ref, 8)[0], struct.unpack_from("<I", ref, 16)[0]
-        koff = page + (ks + page - 1) // page * page
-        ramdisk = ref[koff:koff + rs]
     dt = Path(args.dt).read_bytes() if args.dt else b""
 
-    hdr = bytearray(ref[:HEADER_SIZE])
+    if args.ref:
+        ref = Path(args.ref).read_bytes()
+        assert ref[:8] == b"ANDROID!", "reference is not an Android boot image"
+        page = struct.unpack_from("<I", ref, 36)[0]
+        if args.ramdisk:
+            ramdisk = Path(args.ramdisk).read_bytes()
+        else:
+            # The reference image's own ramdisk, so nothing else changes.
+            ks, rs = struct.unpack_from("<I", ref, 8)[0], struct.unpack_from("<I", ref, 16)[0]
+            koff = page + (ks + page - 1) // page * page
+            ramdisk = ref[koff:koff + rs]
+        hdr = bytearray(ref[:HEADER_SIZE])
+    else:
+        if not args.ramdisk:
+            ap.error("--ramdisk is required without --ref")
+        ramdisk = Path(args.ramdisk).read_bytes()
+        page = args.pagesize
+        board = args.board.encode()
+        assert len(board) < 16, "board name too long"
+        hdr = bytearray(HEADER_SIZE)
+        # magic, kernel size/addr, ramdisk size/addr, second size/addr, tags
+        # addr, page size, dt size (Samsung's slot), unused, board name
+        struct.pack_into("<8s10I16s", hdr, 0, b"ANDROID!",
+                         0, args.base + args.kernel_offset,
+                         0, args.base + args.ramdisk_offset,
+                         0, args.base + args.second_offset,
+                         args.base + args.tags_offset, page, 0, 0, board)
     struct.pack_into("<I", hdr, 8, len(kernel))
     struct.pack_into("<I", hdr, 16, len(ramdisk))
     struct.pack_into("<I", hdr, 24, 0)          # second stage

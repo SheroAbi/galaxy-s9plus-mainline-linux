@@ -3,47 +3,54 @@
 ## Build host
 
 Any Linux with an aarch64 cross toolchain, run as root (the scripts mount
-loop images and chroot). The reference setup is **WSL Ubuntu-24.04** on
-Windows, and every build script is written so it can be started with one
-`wsl.exe` call.
+loop images and chroot): a plain Ubuntu 24.04 machine or VM is the simplest.
+Neither Windows nor WSL is needed. WSL2 works too, and was the setup this
+port was developed on.
 
 The kernel tree does not live in the project folder. `scripts/build/env.sh`
 defines where it does, and every value can be overridden:
 
 ```
-BUILD_IMG=/mnt/e/s9plus-build.img   70 GB ext4 loop image (default), mounted at
-BUILD=/mnt/build
+BUILD=/mnt/build                    the build directory (any directory on Linux)
   $BUILD/src/mainline               the mainline 7.1 tree
   $BUILD/out                        initramfs staging, busybox, empty ramdisk
-  $BUILD/tools/bin                  mkbootimg, dtbTool-exynos
   $BUILD/rootfs/noble               the staged Ubuntu rootfs
+BUILD_IMG=                          only under WSL: an ext4 loop image mounted at
+                                    $BUILD (default /mnt/e/s9plus-build.img there)
 ```
 
-On WSL the loop image is needed because a kernel tree on a 9p/DrvFs mount is
-unusably slow and cannot hold the symlinks and permissions the build needs.
-On a plain Linux host, `BUILD=/some/directory` is enough.
+On a plain Linux host `BUILD` is an ordinary directory and `BUILD_IMG` stays
+empty. Under WSL the project sits on a 9p/DrvFs mount, which is unusably slow
+for a kernel tree and cannot hold its symlinks and permissions, hence the
+70 GB loop image; set `BUILD_IMG` to wherever it should go.
 
-Three inputs are not fetched by the scripts: a static arm64 **busybox** at
-`$BUILD/out/busybox-arm64` (the initramfs), and **mkbootimg** and
-**dtbTool-exynos** in `$BUILD/tools/bin`.
+Nothing is downloaded as a prebuilt binary from this project. The one input
+from outside the toolchain is a static arm64 **busybox** for the initramfs:
+`toolchain.sh` takes it from Ubuntu's `busybox-static` package
+(`scripts/build/fetch_busybox.py`, checked against the archive's SHA-256). It
+has to be static: the initramfs has no C library, and with a dynamic busybox
+the build stops with `qemu-aarch64-static: Could not open
+'/lib/ld-linux-aarch64.so.1'`. The boot image and the `dt.img` table are
+written by `mkboot.py` and `mkdtbh.py`, Python versions of Samsung's
+`mkbootimg` and of `dtbTool-exynos` that produce the same bytes.
 
-> WSL unmounts the loop image between `wsl.exe` invocations, and anything
-> still in the page cache is lost with it. Every script therefore mounts it
-> itself and ends with `sync`. A finished `Image` that was 54 MB before the
-> call has come back as 0 bytes without that.
+> Under WSL, the loop image is unmounted between `wsl.exe` invocations, and
+> anything still in the page cache is lost with it. Every script therefore
+> mounts it itself and ends with `sync`. A finished `Image` that was 54 MB
+> before the call has come back as 0 bytes without that.
 
 ### One-time setup
 
 ```bash
-scripts/build/setup_build.sh    # create and mount the build image (BUILD_IMG)
-scripts/build/toolchain.sh      # gcc-aarch64-linux-gnu, bison, flex, cpio, qemu-user-static, ...
-scripts/build/fetch_mainline.sh # clone the mainline tree into /mnt/build/src/mainline
+sudo scripts/build/setup_build.sh    # create BUILD (and, under WSL, the loop image)
+sudo scripts/build/toolchain.sh      # gcc-aarch64-linux-gnu, bison, flex, qemu-user-static, ..., busybox
+sudo scripts/build/fetch_mainline.sh # clone the mainline tree into $BUILD/src/mainline
 ```
 
 ## The build
 
 ```bash
-scripts/build/build_stable.sh
+sudo scripts/build/build_stable.sh
 ```
 
 That is the configuration the device runs: `INIT=boot UFS=1 GPU=1 DECON=1
@@ -105,8 +112,8 @@ All of them are environment variables.
 6. Configures, builds `Image` and `dtbs`, and modules if any are `=m`.
 7. **Writes `0x00080000` back into the arm64 image header's `text_offset`.**
    See below.
-8. Packs `dt.img` with `dtbTool-exynos` and the boot image with `mkbootimg`,
-   then appends `SEANDROIDENFORCE`.
+8. Packs `dt.img` with `mkdtbh.py` and the boot image with `mkboot.py`,
+   which also appends `SEANDROIDENFORCE`.
 
 ### text_offset — why a mainline kernel does nothing at all here
 
@@ -181,7 +188,7 @@ USERDATA on the first boot) and `SHA256SUMS`. The image needs no kernel
 modules — the stable kernel has every driver built in — so kernel and root
 filesystem can be rebuilt independently.
 
-Build host: Ubuntu 24.04 as root (WSL2 works), with
+Build host: Ubuntu 24.04 as root (a VM or WSL2 works too), with
 `debootstrap qemu-user-static binfmt-support e2fsprogs openssl python3 curl
 git`. The work directory (`WORK`, default `/var/tmp/s9plus-image`) must be
 on a Linux filesystem.

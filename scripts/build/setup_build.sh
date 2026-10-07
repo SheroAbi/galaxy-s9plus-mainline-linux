@@ -1,17 +1,20 @@
 #!/bin/bash
-# One-time: create the 70 GB ext4 build image (BUILD_IMG) and mount it at
-# BUILD. See env.sh; on a plain Linux host a directory is enough.
+# One-time: create the build directory BUILD (see env.sh). Under WSL, with
+# BUILD_IMG set, it first creates the 70 GB ext4 image and mounts it there;
+# on a plain Linux host a directory is all it takes.
 set -e
 . "$(dirname "${BASH_SOURCE[0]}")/env.sh"
-IMG=$BUILD_IMG
 MNT=$BUILD
-if [ ! -f "$IMG" ]; then
-  truncate -s 70G "$IMG"
-  mkfs.ext4 -q -F -m 0 "$IMG"
-  echo "IMAGE_CREATED"
-fi
 mkdir -p "$MNT"
-mountpoint -q "$MNT" || mount -o loop "$IMG" "$MNT"
+if [ -n "$BUILD_IMG" ]; then
+  if [ ! -f "$BUILD_IMG" ]; then
+    mkdir -p "$(dirname "$BUILD_IMG")"
+    truncate -s 70G "$BUILD_IMG"
+    mkfs.ext4 -q -F -m 0 "$BUILD_IMG"
+    echo "IMAGE_CREATED $BUILD_IMG"
+  fi
+  mountpoint -q "$MNT" || mount -o loop "$BUILD_IMG" "$MNT"
+fi
 df -h "$MNT" | tail -1
 mkdir -p "$MNT/src" "$MNT/out" "$MNT/rootfs"
 echo SETUP_OK

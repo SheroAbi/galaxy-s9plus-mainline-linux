@@ -7,7 +7,6 @@ PROJ=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 mount_build || exit 1
 SRC="$BUILD/src/mainline"
 DIST="${DIST:-$PROJ/dist}"
-T="$BUILD/tools/bin"
 cd "$SRC" || exit 1
 
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
@@ -63,6 +62,17 @@ echo "=== initramfs ==="
 RAMFS="$BUILD/out/mainline-initramfs"
 rm -rf "$RAMFS"
 mkdir -p "$RAMFS"/bin "$RAMFS"/dev "$RAMFS"/proc "$RAMFS"/sys "$RAMFS"/run "$RAMFS"/tmp
+# a static busybox: the initramfs has no C library (toolchain.sh fetches it)
+if [ ! -f "$BUILD/out/busybox-arm64" ]; then
+	echo "missing $BUILD/out/busybox-arm64: run scripts/build/toolchain.sh," \
+		"or python3 scripts/build/fetch_busybox.py $BUILD/out/busybox-arm64"
+	exit 1
+fi
+if readelf -l "$BUILD/out/busybox-arm64" | grep -q 'program interpreter'; then
+	echo "$BUILD/out/busybox-arm64 is dynamically linked; replace it with a static one:" \
+		"python3 scripts/build/fetch_busybox.py $BUILD/out/busybox-arm64"
+	exit 1
+fi
 install -m755 "$BUILD/out/busybox-arm64" "$RAMFS/bin/busybox"
 for applet in $(qemu-aarch64-static "$RAMFS/bin/busybox" --list); do
 	case "$applet" in busybox) continue ;; esac
@@ -359,18 +369,19 @@ if [ ! -f "$BUILD/out/empty-ramdisk.cpio.gz" ]; then
 fi
 OUT="$DIST/m71-$STAMP"
 mkdir -p "$OUT"
-# dtbTool wants dtb files, not a directory (it segfaults on one), and sboot
-# wants the DTBH table it produces, not a bare blob.
-"$T/dtbTool-exynos" -o "$OUT/dt.img" -s 2048 	out/arch/arm64/boot/dts/exynos/exynos9810-star2lte.dtb
-head -c 4 "$OUT/dt.img" | grep -q DTBH || { echo "dt.img is not a DTBH table"; sync; exit 1; }
-xxd -l 48 "$OUT/dt.img"
-"$T/mkbootimg" --kernel out/arch/arm64/boot/Image --dt "$OUT/dt.img" \
+# sboot wants the DTBH table dtbTool-exynos produces, not a bare blob.
+# mkdtbh.py and mkboot.py write the same bytes as dtbTool-exynos and
+# Samsung's mkbootimg did, without a prebuilt binary; mkboot.py also
+# appends the SEANDROIDENFORCE trailer.
+python3 "$PROJ/scripts/build/mkdtbh.py" -o "$OUT/dt.img" -s 2048 \
+	out/arch/arm64/boot/dts/exynos/exynos9810-star2lte.dtb || { sync; exit 1; }
+od -A x -t x1z -N 48 "$OUT/dt.img"
+python3 "$PROJ/scripts/build/mkboot.py" --kernel out/arch/arm64/boot/Image --dt "$OUT/dt.img" \
 	--ramdisk "$BUILD/out/empty-ramdisk.cpio.gz" \
 	--cmdline "$CMDLINE" \
 	--base 0x10000000 --kernel_offset 0x00008000 --ramdisk_offset 0x01000000 \
-	--second_offset 0x00f00000 --tags_offset 0x00000100 --pagesize 2048 --board '' \
-	-o "$OUT/boot.img"
-printf 'SEANDROIDENFORCE' >> "$OUT/boot.img"
+	--second_offset 0x00f00000 --tags_offset 0x00000100 --pagesize 2048 \
+	-o "$OUT/boot.img" || { sync; exit 1; }
 SIZE=$(stat -c %s "$OUT/boot.img")
 echo "boot.img: $SIZE bytes ($((57671680 - SIZE)) spare in BOOT)"
 [ "$SIZE" -le 57671680 ] || { echo "TOO BIG"; sync; exit 1; }
