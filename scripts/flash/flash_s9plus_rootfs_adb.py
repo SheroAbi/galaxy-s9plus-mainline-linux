@@ -17,6 +17,12 @@ PROJECT = Path(__file__).resolve().parents[2]
 ADB = os.environ.get("S9PLUS_ADB", "adb")
 
 
+def require(ok, message):
+    """A safety check that, unlike assert, survives python -O."""
+    if not ok:
+        raise SystemExit(message)
+
+
 def find_serial():
     """Every call names the S9+ explicitly, so no other attached phone is ever
     touched. S9PLUS_SERIAL wins; otherwise exactly one star2lte must be on adb."""
@@ -64,18 +70,18 @@ def main() -> int:
     image = Path(sys.argv[1]).resolve()
     scratch = Path(sys.argv[2]) if len(sys.argv) > 2 else image.parent / "chunk.tmp"
     size = image.stat().st_size
-    assert size % MB == 0, "Image size must be a whole number of MiB"
+    require(size % MB == 0, "Image size must be a whole number of MiB")
     total_mb = size // MB
 
-    assert adb("get-state") == "recovery", "Samsung is not in TWRP recovery"
-    assert adb("shell", "getprop ro.product.device") == "star2lte", "Wrong device"
-    assert adb("shell", "id -u") == "0", "Recovery is not root"
+    require(adb("get-state") == "recovery", "Samsung is not in TWRP recovery")
+    require(adb("shell", "getprop ro.product.device") == "star2lte", "Wrong device")
+    require(adb("shell", "id -u") == "0", "Recovery is not root")
     node = adb("shell", f"readlink -f {BYNAME}/USERDATA")
-    assert node == "/dev/block/sda25", f"Unexpected USERDATA node: {node}"
+    require(node == "/dev/block/sda25", f"Unexpected USERDATA node: {node}")
     capacity = int(adb("shell", f"blockdev --getsize64 {node}"))
-    assert size <= capacity, f"Image {size} does not fit in {capacity}"
+    require(size <= capacity, f"Image {size} does not fit in {capacity}")
     mounts = adb("shell", "cat /proc/mounts")
-    assert node not in mounts, f"{node} is mounted:\n{mounts}"
+    require(node not in mounts, f"{node} is mounted:\n{mounts}")
     print(f"USERDATA={node} capacity={capacity} image={size} ({total_mb} MiB)", flush=True)
 
     chunks = (total_mb + CHUNK_MB - 1) // CHUNK_MB
@@ -99,7 +105,7 @@ def main() -> int:
                          f"seek={index * CHUNK_MB} conv=fsync")
             back = adb("shell", f"dd if={node} bs=1048576 skip={index * CHUNK_MB} "
                                 f"count={count} 2>/dev/null | sha256sum").split()[0]
-            assert back == want, f"chunk {index} readback mismatch"
+            require(back == want, f"chunk {index} readback mismatch")
             written += 1
             print(f"  chunk {index + 1}/{chunks} written and verified "
                   f"({(time.time() - started) / 60:.1f} min elapsed)", flush=True)
@@ -115,7 +121,7 @@ def main() -> int:
     print("reading the whole partition back", flush=True)
     actual = adb("shell", f"dd if={node} bs=1048576 count={total_mb} 2>/dev/null "
                           f"| sha256sum").split()[0]
-    assert actual == expected, f"USERDATA readback mismatch: {actual} != {expected}"
+    require(actual == expected, f"USERDATA readback mismatch: {actual} != {expected}")
     print(f"USERDATA_READBACK_VERIFIED sha256={expected} bytes={size}", flush=True)
 
     # e2fsck exits 1 when it repaired something, which is not a transfer failure.
