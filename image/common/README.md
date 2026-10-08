@@ -17,6 +17,9 @@ phone's hardware needs (`device/` in each project) differ.
 * **Firefox** from Mozilla's own APT repository (Ubuntu's `firefox` package
   is only a snap).
 * NetworkManager, OpenSSH, Bluetooth (BlueZ), PipeWire, UPower, zram swap.
+  NetworkManager manages every device, as on an installed Ubuntu Desktop
+  (`/etc/netplan/01-network-manager-all.yaml`; without it Ubuntu's
+  NetworkManager touches nothing but Wi-Fi and modems).
 * Exactly the packages in [`packages.txt`](packages.txt), installed without
   recommends, plus what they strictly depend on.
 

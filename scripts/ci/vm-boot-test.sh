@@ -89,8 +89,55 @@ mount "$PART" "$WORK/mnt"
 mkdir -p "$WORK/mnt/usr/lib/modules"
 cp -a "$MODS" "$WORK/mnt/usr/lib/modules/"
 depmod -b "$WORK/mnt" "$KVER"
+# a journal on disk, readable afterwards if the VM never answers
+mkdir -p "$WORK/mnt/var/log/journal"
 umount "$WORK/mnt"
 losetup -d "$DEV"
+
+# Job logs need a login on GitHub, annotations do not: results go there too.
+# annotate <notice|error> <file>...
+annotate() {
+	[ -n "${GITHUB_ACTIONS:-}" ] || return 0
+	python3 - "$@" <<'PY'
+import sys
+kind, *files = sys.argv[1:]
+lines = [l[:300] for f in files for l in open(f, errors="replace").read().splitlines() if l.strip()]
+chunks, cur = [], ""
+for l in lines:
+    if cur and len(cur) + len(l) > 3400:
+        chunks.append(cur)
+        cur = ""
+    cur += l + "\n"
+chunks.append(cur)
+for i, c in enumerate(chunks[-4:], 1):
+    c = c.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
+    print(f"::{kind} title=First boot in a VM ({i})::{c}")
+PY
+}
+
+# postmortem <reason>: stop the VM and read its journal from the disk
+postmortem() {
+	local P=$WORK/postmortem.txt d p
+	set +e
+	{
+		echo "$1"
+		kill $QEMU 2>/dev/null; wait $QEMU 2>/dev/null
+		d=$(losetup -fP --show "$WORK/disk.img"); p=$d
+		[ "$ROOT" = vda ] || p=${d}p${ROOT#vda}
+		mount -o ro,noload "$p" "$WORK/mnt"
+		J="journalctl -D $WORK/mnt/var/log/journal --no-pager -o short-monotonic"
+		echo "--- failed units and errors"
+		$J -p err | grep -v ' kernel: ' | tail -n 30
+		echo "--- network and SSH"
+		$J -u NetworkManager.service -u ssh.socket -u ssh.service -u first-boot-ssh-keys.service | tail -n 30
+		umount "$WORK/mnt"; losetup -d "$d"
+		echo "--- console"
+		tail -n 15 "$WORK/console.log" | sed 's/\x1b\[[0-9;]*[A-Za-z]//g'
+	} > "$P" 2>&1
+	cat "$P"
+	annotate error "$P"
+	exit 1
+}
 
 log "boot $KVER (TCG, multi-user target)"
 # romfile=: the NIC's boot ROM is only for firmware network boot, and its
@@ -111,8 +158,8 @@ ssh_vm() {
 sudo_vm() { ssh_vm "echo '$PASS' | sudo -S -p '' $1"; }
 for i in $(seq 1 120); do
 	if ssh_vm true 2>/dev/null; then echo "SSH login after ~$((i * 10)) s"; break; fi
-	kill -0 $QEMU 2>/dev/null || { echo "VM stopped"; tail -n 60 "$WORK/console.log"; exit 1; }
-	[ "$i" = 120 ] && { echo "no SSH login after 20 min"; tail -n 80 "$WORK/console.log"; exit 1; }
+	kill -0 $QEMU 2>/dev/null || postmortem "VM stopped"
+	[ "$i" = 120 ] && postmortem "no SSH login after 20 min: $(ssh_vm true 2>&1 | tail -n 2)"
 	sleep 10
 done
 
@@ -208,26 +255,8 @@ else
 fi
 cat "$C"
 
-# Job logs need a login on GitHub, annotations do not: the results go there
-# too, passed or not.
-if [ -n "${GITHUB_ACTIONS:-}" ]; then
-	kind=notice; [ $fail = 0 ] || kind=error
-	python3 - "$kind" "$WORK/summary.txt" "$C" <<'PY'
-import sys
-kind, *files = sys.argv[1:]
-lines = [l[:300] for f in files for l in open(f, errors="replace").read().splitlines() if l.strip()]
-chunks, cur = [], ""
-for l in lines:
-    if cur and len(cur) + len(l) > 3400:
-        chunks.append(cur)
-        cur = ""
-    cur += l + "\n"
-chunks.append(cur)
-for i, c in enumerate(chunks[-4:], 1):
-    c = c.replace("%", "%25").replace("\r", "").replace("\n", "%0A")
-    print(f"::{kind} title=First boot in a VM ({i})::{c}")
-PY
-fi
+kind=notice; [ $fail = 0 ] || kind=error
+annotate $kind "$WORK/summary.txt" "$C"
 
 sudo_vm 'systemctl poweroff' 2>/dev/null || true
 for i in $(seq 1 30); do kill -0 $QEMU 2>/dev/null || break; sleep 2; done

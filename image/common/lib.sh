@@ -196,6 +196,22 @@ EOF
 			> "$R/etc/ssh/sshd_config.d/20-keys-only.conf"
 	fi
 
+	# Ubuntu's NetworkManager leaves every device but Wi-Fi and modems
+	# unmanaged (/usr/lib/NetworkManager/conf.d/10-globally-managed-devices.conf)
+	# until a netplan file names it the renderer. Ubuntu's installer writes
+	# that file, debootstrap does not: without it a USB network managed by
+	# NetworkManager or a USB Ethernet adapter stays down until saving a Wi-Fi
+	# network happens to create one. USB gadget interfaces stay unmanaged by
+	# NetworkManager's udev rule unless a device layer asks for them.
+	install -d -m 755 "$R/etc/netplan"
+	cat > "$R/etc/netplan/01-network-manager-all.yaml" <<'EOF'
+# Let NetworkManager manage all devices on this system
+network:
+  version: 2
+  renderer: NetworkManager
+EOF
+	chmod 600 "$R/etc/netplan/01-network-manager-all.yaml"
+
 	# ssh.socket (Ubuntu's default) starts sshd on the first connection.
 	in_chroot "$R" systemctl enable first-boot-ssh-keys.service grow-rootfs.service \
 		NetworkManager.service ssh.socket gdm.service
