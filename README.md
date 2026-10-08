@@ -35,7 +35,7 @@ Just a current kernel, GNOME on Wayland and your phone as a small Linux computer
 | Watchdog | any hang becomes a reboot into TWRP instead of a dead phone | upstream `s3c2410_wdt` + PMU unmask |
 
 **Not working (yet):** deep CPU idle (costs battery), suspend, audio, camera,
-mobile network. About every second warm reboot hangs early and is rescued by
+mobile network, Bluetooth (not in the kernel). About every second warm reboot hangs early and is rescued by
 the watchdog. This is a working Linux machine, not a finished phone.
 Details: [docs/06-known-issues.md](docs/06-known-issues.md).
 

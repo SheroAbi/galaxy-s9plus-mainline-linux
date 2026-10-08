@@ -7,9 +7,18 @@ set -euo pipefail
 chmod 600 /etc/NetworkManager/system-connections/usb0.nmconnection
 
 # USB serial console and network, touch/charger power fix, the stability
-# defaults, Wi-Fi reconnect after a failed rekey, Bluetooth attach.
+# defaults, Wi-Fi reconnect after a failed rekey. hciattach-bcm4361.service
+# stays off: the kernel is built without Bluetooth (build71.sh turns BT and
+# RFKILL off), so it could only fail and restart every 3 s.
 systemctl enable usb-gadget.service s9p-touch-power.service s9p-stability.service \
-	s9p-wifi-guard.service hciattach-bcm4361.service serial-getty@ttyGS0.service
+	s9p-wifi-guard.service serial-getty@ttyGS0.service
+
+# The common image sets up zram swap, but this kernel has no zram (and the
+# image carries no modules): zram-generator would create dev-zram0.swap for
+# a device that never appears, and every boot would wait 90 s for it, then
+# report failed units. An empty generator config switches it off; 6 GB of
+# RAM run the desktop without swap.
+ln -sf /dev/null /etc/systemd/zram-generator.conf
 
 # Suspend never resumes on this port (the M3 cores do not come back).
 systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target \

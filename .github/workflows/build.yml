@@ -14,6 +14,7 @@ on:
       - 'firmware/**'
       - 'bootloader/**'
       - 'branding/**'
+      - 'scripts/ci/**'
       - '.github/workflows/build.yml'
   pull_request:
   workflow_dispatch:
@@ -105,10 +106,6 @@ jobs:
           set -o pipefail
           sudo -E WORK=/mnt/s9plus-image OUT=/mnt/image-out image/build-image.sh 2>&1 | tee /tmp/image.log
 
-      - name: Logs
-        if: failure()
-        run: python3 scripts/ci/annotate_tail.py /tmp/image.log build-image.sh
-
       - name: Check the image
         run: |
           ls -l /mnt/image-out
@@ -122,3 +119,24 @@ jobs:
           sudo grep -q '^root:[!*]' /mnt/r/etc/shadow
           grep -q '^PAN_MAX_AFBC_PACKING_RATIO=0' /mnt/r/etc/environment
           sudo umount /mnt/r
+
+      - name: First boot in a VM (scripts/ci/vm-boot-test.sh)
+        env:
+          IMAGE_PASSWORD: ci-only-not-a-real-password
+          HOSTNAME_EXPECTED: s9plus
+          # the S9+ kernel has no zram; these need the phone's hardware
+          EXPECT_ZRAM: '0'
+          DEVICE_UNITS: usb-gadget.service s9p-touch-power.service s9p-stability.service
+        run: |
+          sudo apt-get install -y -qq --no-install-recommends qemu-system-arm sshpass zstd
+          set -o pipefail
+          sudo -E scripts/ci/vm-boot-test.sh /mnt/image-out/s9plus-rootfs.img vda 2>&1 | tee /tmp/vm.log
+
+      - name: Logs
+        if: failure()
+        run: |
+          if [ -f /tmp/vm.log ]; then
+            python3 scripts/ci/annotate_tail.py /tmp/vm.log vm-boot-test.sh
+          else
+            python3 scripts/ci/annotate_tail.py /tmp/image.log build-image.sh
+          fi
