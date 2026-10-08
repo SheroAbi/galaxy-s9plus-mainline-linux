@@ -14,6 +14,8 @@
 #   DEVICE_UNITS       space separated units that need the phone's hardware
 #   EXPECT_ZRAM        1 (default): zram swap must be active; 0: the phone's
 #                      kernel has no zram, so the image must not set it up
+#   EXTRA_CHECKS       shell code run as root in the VM after the common
+#                      checks; it can use: check "<what>" <command...>
 #
 # Needs qemu-system-arm, sshpass, zstd and e2fsprogs on the host.
 set -euo pipefail
@@ -202,9 +204,29 @@ check "graphical target is the default" test "$(systemctl get-default)" = graphi
 if [ "$EXPECT_ZRAM" = 1 ]; then
 	check "zram swap active" grep -q '^/dev/zram' /proc/swaps
 else
-	check "no zram swap set up (the phone's kernel has no zram)" test -z \
-		"$(grep zram /proc/swaps; systemctl list-units --all --no-legend --plain 'dev-zram*' 'systemd-zram-setup@*')"
+	z=$(grep zram /proc/swaps; find /run/systemd/generator -name '*zram*' 2>/dev/null)
+	check "no zram swap set up (the phone's kernel has no zram)${z:+: }$(echo $z)" test -z "$z"
 fi
+
+# An ordering cycle is broken by dropping a job of systemd's choice, on
+# every boot: whatever it drops is missing on the phone too.
+cycles=$(journalctl -b -o cat _PID=1 | grep -i 'ordering cycle' | sort -u)
+[ -z "$cycles" ] || echo "$cycles" | sed 's/^/      /'
+check "no ordering cycles" test -z "$cycles"
+
+# Modules the image loads at boot must exist for the phone's kernel (any
+# module tree in the image but the VM's).
+missing=
+for kdir in /usr/lib/modules/*; do
+	[ -d "$kdir" ] && [ "${kdir##*/}" != "$(uname -r)" ] || continue
+	for m in $(cat /etc/modules-load.d/*.conf /usr/lib/modules-load.d/*.conf 2>/dev/null | sed 's/#.*//'); do
+		n=$(echo "$m" | tr - _)
+		find "$kdir" \( -name "$n.ko*" -o -name "$(echo "$n" | tr _ -).ko*" \) | grep -q . ||
+			grep -qE "/($n|$(echo "$n" | tr _ -))\.ko" "$kdir/modules.builtin" 2>/dev/null ||
+			missing="$missing ${kdir##*/}:$m"
+	done
+done
+check "modules loaded at boot exist for the phone's kernel${missing:+:$missing}" test -z "$missing"
 [ -z "$HOST" ] || check "host name $HOST" test "$(hostname)" = "$HOST"
 
 unexpected=
@@ -236,8 +258,9 @@ for u in $units; do
 done
 echo "info  verified:" $units
 check "the image's own unit files are valid${broken:+:$broken}" test -z "$broken"
-exit $fail
 CHECK
+# the project's own checks, then the result
+printf '%s\nexit $fail\n' "${EXTRA_CHECKS:-}" >> "$WORK/vmcheck.sh"
 
 log "checks"
 fail=0

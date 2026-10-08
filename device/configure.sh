@@ -17,8 +17,10 @@ systemctl enable usb-gadget.service s9p-touch-power.service s9p-stability.servic
 # image carries no modules): zram-generator would create dev-zram0.swap for
 # a device that never appears, and every boot would wait 90 s for it, then
 # report failed units. An empty generator config switches it off; 6 GB of
-# RAM run the desktop without swap.
+# RAM run the desktop without swap. The common zram tuning goes too: on a
+# swap file on flash it would push memory out to UFS early.
 ln -sf /dev/null /etc/systemd/zram-generator.conf
+rm -f /etc/sysctl.d/90-zram.conf
 
 # Suspend never resumes on this port (the M3 cores do not come back).
 systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target \

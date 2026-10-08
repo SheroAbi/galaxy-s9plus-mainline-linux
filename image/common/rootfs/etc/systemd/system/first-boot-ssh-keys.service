@@ -1,7 +1,11 @@
 [Unit]
 Description=Create this phone's own SSH host keys on the first boot
 ConditionPathExists=!/etc/ssh/ssh_host_ed25519_key
-Before=ssh.service ssh.socket
+# Before sshd, not before ssh.socket: the socket needs no keys, and as a
+# normal service this unit comes after basic.target, which waits for every
+# socket. "Before=ssh.socket" made an ordering cycle that systemd broke on
+# every boot by dropping a job of its choice (sockets.target).
+Before=ssh.service
 
 [Service]
 Type=oneshot
