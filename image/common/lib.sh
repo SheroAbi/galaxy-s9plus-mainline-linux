@@ -61,8 +61,13 @@ image_settings() {
 }
 
 # copy_tree <src dir> <dst dir>: modes as in the repository, owner root.
+# --keep-directory-symlink: Ubuntu's /lib, /bin and /sbin are symlinks into
+# /usr, and by default tar replaces such a symlink with a real directory when
+# the tree has lib/... in it - which leaves the image without its dynamic
+# loader (/lib/ld-linux-aarch64.so.1).
 copy_tree() {
-	tar -C "$1" --owner=0 --group=0 --numeric-owner -cf - . | tar -C "$2" -xpf -
+	tar -C "$1" --owner=0 --group=0 --numeric-owner -cf - . |
+		tar -C "$2" --keep-directory-symlink -xpf -
 }
 
 _mounts=()
@@ -130,9 +135,13 @@ EOF
 	printf '#!/bin/sh\nexit 101\n' > "$R/usr/sbin/policy-rc.d"
 	chmod 755 "$R/usr/sbin/policy-rc.d"
 	pkgs=$(cat "$COMMON_DIR/packages.txt" "$devpkgs" | sed 's/#.*//' | tr -s ' \t\n' ' ')
+	# rootfs/ is copied in before the packages, and some of its files are
+	# also conffiles of a package (etc/systemd/zram-generator.conf). dpkg
+	# would stop and ask which one to keep, with nobody to answer: keep ours.
+	local keep_ours=(-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 	in_chroot "$R" apt-get update
-	in_chroot "$R" apt-get -y --no-install-recommends install $pkgs
-	in_chroot "$R" apt-get -y --no-install-recommends full-upgrade
+	in_chroot "$R" apt-get -y --no-install-recommends "${keep_ours[@]}" install $pkgs
+	in_chroot "$R" apt-get -y --no-install-recommends "${keep_ours[@]}" full-upgrade
 }
 
 # rootfs_configure <dir>: the settings every phone shares.

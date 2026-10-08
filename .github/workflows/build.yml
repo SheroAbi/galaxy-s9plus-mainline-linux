@@ -116,6 +116,8 @@ jobs:
           sudo e2fsck -fn /mnt/image-out/s9plus-rootfs.img
           sudo mkdir -p /mnt/r && sudo mount -o loop,ro /mnt/image-out/s9plus-rootfs.img /mnt/r
           test -f /mnt/r/usr/sbin/gdm3
+          test -L /mnt/r/lib && test -e /mnt/r/lib/ld-linux-aarch64.so.1
+          test -f /mnt/r/usr/lib/firmware/brcm/brcmfmac4361-pcie.bin
           test ! -e /mnt/r/etc/ssh/ssh_host_ed25519_key
           sudo grep -q '^root:[!*]' /mnt/r/etc/shadow
           grep -q '^PAN_MAX_AFBC_PACKING_RATIO=0' /mnt/r/etc/environment

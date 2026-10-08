@@ -37,7 +37,10 @@ fi
 pkgs=$(sed 's/#.*//' "$D/packages" 2>/dev/null | tr -s ' \n' ' ' || true)
 pkgs=${pkgs# }; pkgs=${pkgs% }
 [ -z "$pkgs" ] || apt-get install -y --no-install-recommends $pkgs
-(cd "$D/files" && tar --owner=0 --group=0 --numeric-owner -cf - .) | tar -C / --no-overwrite-dir -xpf -
+# --keep-directory-symlink: never turn /lib or /bin (symlinks into /usr) into
+# real directories, should a feature ever ship files below them.
+(cd "$D/files" && tar --owner=0 --group=0 --numeric-owner -cf - .) |
+	tar -C / --no-overwrite-dir --keep-directory-symlink -xpf -
 systemctl daemon-reload
 [ ! -d "$D/files/etc/sysctl.d" ] || sysctl --system >/dev/null
 [ -z "$units" ] || systemctl enable --now $units
