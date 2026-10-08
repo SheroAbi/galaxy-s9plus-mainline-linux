@@ -1,5 +1,7 @@
 # 📱 Ubuntu on the Samsung Galaxy S9+
 
+[![build](https://github.com/SheroAbi/galaxy-s9plus-mainline-linux/actions/workflows/build.yml/badge.svg)](https://github.com/SheroAbi/galaxy-s9plus-mainline-linux/actions/workflows/build.yml)
+
 **A real Ubuntu 24.04 desktop on the Galaxy S9+, on mainline Linux 7.1.**
 No Android underneath, no Halium, no container, no vendor blobs doing the work.
 Just a current kernel, GNOME on Wayland and your phone as a small Linux computer.
@@ -42,7 +44,8 @@ Details: [docs/06-known-issues.md](docs/06-known-issues.md).
 ## 🛠️ Build it yourself
 
 Everything is built from this repository and public sources. No image is
-downloaded from us.
+downloaded from us. These exact steps run on every change on a fresh Ubuntu
+24.04 machine ([build](https://github.com/SheroAbi/galaxy-s9plus-mainline-linux/actions/workflows/build.yml)).
 
 **You need:** a Galaxy S9+ (SM-G965F) with an **unlocked bootloader** and
 **TWRP 3.3.1-0** on `RECOVERY`, a **Linux** build host (Ubuntu 24.04 on a PC
