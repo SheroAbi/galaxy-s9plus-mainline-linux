@@ -1,0 +1,114 @@
+# The README's build steps on a fresh Ubuntu 24.04 machine, nothing else
+# installed: proves the build works on plain Linux, without WSL and without
+# any prebuilt tool. Nothing is published; only logs are kept on failure.
+name: build
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'scripts/build/**'
+      - 'device/**'
+      - 'image/**'
+      - 'firmware/**'
+      - 'bootloader/**'
+      - 'branding/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  kernel:
+    name: kernel + uniLoader boot image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      BUILD: /mnt/build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Disk space
+        run: df -h / /mnt
+
+      - name: One-time setup
+        run: |
+          sudo -E scripts/build/setup_build.sh
+          sudo -E scripts/build/toolchain.sh
+          sudo -E scripts/build/fetch_mainline.sh
+
+      - name: Busybox is static
+        run: |
+          file "$BUILD/out/busybox-arm64"
+          ! readelf -l "$BUILD/out/busybox-arm64" | grep -q 'program interpreter'
+
+      - name: Kernel (build_stable.sh)
+        run: sudo -E scripts/build/build_stable.sh
+
+      - name: Boot image (pack_uniloader.sh, official TWRP 3.3.1-0 as template)
+        run: |
+          curl -fsSL -e https://dl.twrp.me/star2lte/twrp-3.3.1-0-star2lte.img.html \
+            -o /tmp/twrp.img https://dl.twrp.me/star2lte/twrp-3.3.1-0-star2lte.img
+          echo "5b5d2290940203316024a94581107ffad17670bb2f596fd27ef483d3d2685994  /tmp/twrp.img" | sha256sum -c -
+          out=$(ls -d dist/m71-* | tail -1)
+          sudo -E TWRP_IMG=/tmp/twrp.img scripts/build/pack_uniloader.sh "$out" boot-s9plus.img
+
+      - name: Check the images
+        run: |
+          out=$(ls -d dist/m71-* | tail -1)
+          python3 - "$out/boot.img" dist/uniloader/boot-s9plus.img <<'PY'
+          import struct, sys
+          sys.path.insert(0, "scripts/build")
+          from boot_parts import parts
+          for path in sys.argv[1:]:
+              blob = open(path, "rb").read()
+              p = parts(blob)
+              assert blob.endswith(b"SEANDROIDENFORCE"), path
+              assert p["dt"][:4] == b"DTBH", path
+              print(f"{path}: {len(blob):,} bytes, kernel {len(p['kernel']):,}, dt {len(p['dt']):,}")
+          kernel = parts(open(sys.argv[1], "rb").read())["kernel"]
+          assert kernel[56:60] == b"ARM\x64", "not an arm64 Image"
+          assert struct.unpack_from("<Q", kernel, 8)[0] == 0x80000, "text_offset not fixed up"
+          print("text_offset 0x80000, ARM64 magic ok")
+          PY
+          ls -l dist/uniloader/
+
+      - name: Logs
+        if: failure()
+        run: |
+          sudo tail -n 80 "$BUILD/stable-build.log" || true
+          sudo sh -c 'tail -n 60 build-logs/*.log' || true
+
+  rootfs:
+    name: Ubuntu root filesystem
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Host packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends debootstrap qemu-user-static \
+            binfmt-support e2fsprogs openssl python3 curl git
+
+      - name: image/build-image.sh
+        env:
+          IMAGE_PASSWORD: ci-only-not-a-real-password
+        run: sudo -E WORK=/mnt/s9plus-image OUT=/mnt/image-out image/build-image.sh
+
+      - name: Check the image
+        run: |
+          ls -l /mnt/image-out
+          cd /mnt/image-out && sha256sum -c SHA256SUMS
+          sudo e2fsck -fn /mnt/image-out/s9plus-rootfs.img
+          sudo mkdir -p /mnt/r && sudo mount -o loop,ro /mnt/image-out/s9plus-rootfs.img /mnt/r
+          test -f /mnt/r/usr/sbin/gdm3
+          test ! -e /mnt/r/etc/ssh/ssh_host_ed25519_key
+          sudo grep -q '^root:[!*]' /mnt/r/etc/shadow
+          grep -q '^PAN_MAX_AFBC_PACKING_RATIO=0' /mnt/r/etc/environment
+          sudo umount /mnt/r
