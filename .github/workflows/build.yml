@@ -30,7 +30,7 @@ jobs:
     env:
       BUILD: /mnt/build
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Disk space
         run: df -h / /mnt
@@ -82,13 +82,15 @@ jobs:
         run: |
           sudo tail -n 80 "$BUILD/stable-build.log" || true
           sudo sh -c 'tail -n 60 build-logs/*.log' || true
+          sudo cat "$BUILD/stable-build.log" > /tmp/fail.log 2>/dev/null || true
+          python3 scripts/ci/annotate_tail.py /tmp/fail.log kernel
 
   rootfs:
     name: Ubuntu root filesystem
     runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Host packages
         run: |
@@ -99,7 +101,13 @@ jobs:
       - name: image/build-image.sh
         env:
           IMAGE_PASSWORD: ci-only-not-a-real-password
-        run: sudo -E WORK=/mnt/s9plus-image OUT=/mnt/image-out image/build-image.sh
+        run: |
+          set -o pipefail
+          sudo -E WORK=/mnt/s9plus-image OUT=/mnt/image-out image/build-image.sh 2>&1 | tee /tmp/image.log
+
+      - name: Logs
+        if: failure()
+        run: python3 scripts/ci/annotate_tail.py /tmp/image.log build-image.sh
 
       - name: Check the image
         run: |
