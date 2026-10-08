@@ -93,11 +93,13 @@ umount "$WORK/mnt"
 losetup -d "$DEV"
 
 log "boot $KVER (TCG, multi-user target)"
+# romfile=: the NIC's boot ROM is only for firmware network boot, and its
+# package (ipxe-qemu) is only a recommendation of qemu-system-arm.
 qemu-system-aarch64 -M virt -cpu max,pauth-impdef=on -smp 4 -m 4096 \
 	-kernel "$VMLINUZ" \
 	-append "root=/dev/$ROOT rootwait rw console=ttyAMA0 systemd.unit=multi-user.target" \
 	-drive file="$WORK/disk.img",if=virtio,format=raw \
-	-netdev user,id=n0,hostfwd=tcp:127.0.0.1:$PORT-:22 -device virtio-net-pci,netdev=n0 \
+	-netdev user,id=n0,hostfwd=tcp:127.0.0.1:$PORT-:22 -device virtio-net-pci,netdev=n0,romfile= \
 	-serial file:"$WORK/console.log" -monitor none -display none &
 QEMU=$!
 trap 'kill $QEMU 2>/dev/null || true' EXIT
