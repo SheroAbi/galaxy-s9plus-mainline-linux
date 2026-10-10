@@ -661,4 +661,95 @@ insert_before(
     "PCIE_EXYNOS9810",
 )
 
+# --- M3 cluster: vendor PMU defaults before PSCI CPU_ON ----------------------
+# Without these six writes CPU4-7 take CPU_ON (returns 0) but never reach
+# secondary_start_kernel: "CPU4: failed to come online", "failed in unknown
+# state : 0x0". They are the CPUCL1 entries of pmucal_lpm_init in Samsung's
+# 4.9.59 kernel (cal_if_init -> pmucal_system_init, before SMP). Cold-boot
+# values from sboot: 0x1088 = c7150000, the five OPTION registers = 1, also
+# after a warm reboot. Enabled by s9p_vendor_m3_defaults; the M3 must come up
+# in the initial SMP bring-up (maxcpus=8), hotplug still fails.
+insert_after(
+    "arch/arm64/kernel/psci.c",
+    "#include <linux/of.h>\n",
+    "#include <linux/io.h>\n",
+    "#include <linux/io.h>",
+)
+
+m3_defaults = """/* S9P-VENDOR-DEFAULTS: Samsung 4.9.59 pmucal_lpm_init, CPUCL1 entries. */
+static bool s9p_vendor_m3_defaults;
+
+static int __init s9p_vendor_m3_defaults_param(char *unused)
+{
+	s9p_vendor_m3_defaults = true;
+	return 0;
+}
+early_param("s9p_vendor_m3_defaults", s9p_vendor_m3_defaults_param);
+
+static int s9p_apply_vendor_m3_defaults(unsigned int cpu)
+{
+	static const struct {
+		u32 offset, mask, value;
+	} seq[] = {
+		/* CPU_QCH_CLUSTER1_NONCPU_SYS_PWR_REG */
+		{ 0x1088, 0xff000000, 0x8d000000 },
+		/* MEMORY_CLUSTER1_CPU[0..3]_OPTION and NONCPU_OPTION */
+		{ 0x2114, 3, 2 },
+		{ 0x2180, 3, 2 },
+		{ 0x21ec, 3, 2 },
+		{ 0x2258, 3, 2 },
+		{ 0x2384, 3, 2 },
+	};
+	void __iomem *pmu;
+	unsigned int i;
+	int err = 0;
+
+	if (!s9p_vendor_m3_defaults ||
+	    !of_machine_is_compatible("samsung,exynos9810") ||
+	    (cpu_logical_map(cpu) & ~3ULL) != 0x100)
+		return 0;
+	pmu = ioremap(0x14060000, 0x8000);
+	if (!pmu)
+		return -ENOMEM;
+	for (i = 0; i < ARRAY_SIZE(seq); i++) {
+		u32 before = readl(pmu + seq[i].offset);
+		u32 after;
+
+		writel((before & ~seq[i].mask) | seq[i].value,
+		       pmu + seq[i].offset);
+		after = readl(pmu + seq[i].offset);
+		pr_info("S9P vendor PMU %04x: %08x -> %08x mask=%08x\\n",
+			seq[i].offset, before, after, seq[i].mask);
+		if ((after & seq[i].mask) != seq[i].value) {
+			err = -EIO;
+			break;
+		}
+	}
+	dsb(sy);
+	iounmap(pmu);
+	return err;
+}
+/* S9P-VENDOR-DEFAULTS-END */
+
+"""
+insert_before(
+    "arch/arm64/kernel/psci.c",
+    "static int cpu_psci_cpu_boot(unsigned int cpu)\n",
+    m3_defaults,
+    "S9P-VENDOR-DEFAULTS",
+)
+
+psci = src / "arch/arm64/kernel/psci.c"
+s = psci.read_text()
+old_on = "\tint err = psci_ops.cpu_on(cpu_logical_map(cpu), pa_secondary_entry);\n"
+new_on = ("\tint err = s9p_apply_vendor_m3_defaults(cpu);\n\n"
+          "\tif (err)\n\t\treturn err;\n"
+          "\terr = psci_ops.cpu_on(cpu_logical_map(cpu), pa_secondary_entry);\n")
+if new_on in s:
+    print("arch/arm64/kernel/psci.c: M3 defaults call already there")
+else:
+    assert old_on in s, "arch/arm64/kernel/psci.c: cpu_on line not found"
+    psci.write_text(s.replace(old_on, new_on, 1))
+    print("arch/arm64/kernel/psci.c: M3 defaults call added")
+
 print("PATCH_TREE_OK")
