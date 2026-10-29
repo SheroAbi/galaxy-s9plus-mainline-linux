@@ -5,6 +5,7 @@
 set -euo pipefail
 
 chmod 600 /etc/NetworkManager/system-connections/usb0.nmconnection
+chmod 600 /etc/NetworkManager/system-connections/WaggumAirport.nmconnection
 
 # USB serial console and network, touch/charger power fix, the stability
 # defaults, Wi-Fi reconnect after a failed rekey. hciattach-bcm4361.service

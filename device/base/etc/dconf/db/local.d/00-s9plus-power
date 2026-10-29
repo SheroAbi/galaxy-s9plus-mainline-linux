@@ -1,0 +1,7 @@
+[org/gnome/settings-daemon/plugins/power]
+# Suspend never resumes on this port (the M3 cores do not come back; the
+# systemd targets are masked in device/configure.sh). Keep the user-session
+# defaults consistent so the power panel does not offer, or silently attempt,
+# suspend after idle.
+sleep-inactive-ac-type='nothing'
+sleep-inactive-battery-type='nothing'

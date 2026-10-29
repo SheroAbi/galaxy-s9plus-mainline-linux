@@ -1,0 +1,5 @@
+[org/gnome/desktop/a11y/applications]
+# The screen magnifier (zoom) can leave the UI unusable on a 6.2" phone panel
+# and is easy to enable by accident in the accessibility panel. Ship it off by
+# default; the matching lock file prevents re-enabling it by mistake.
+screen-magnifier-enabled=false

@@ -1,0 +1,10 @@
+[Unit]
+Description=Galaxy S9+: unblock Bluetooth rfkill (adapter soft-blocked after boot)
+After=bluetooth.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/rfkill unblock bluetooth
+
+[Install]
+WantedBy=multi-user.target

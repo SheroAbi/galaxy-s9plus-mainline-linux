@@ -1,0 +1,15 @@
+[connection]
+id=WaggumAirport
+type=wifi
+autoconnect=true
+
+[wifi]
+mode=infrastructure
+ssid=WaggumAirport
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=DankefuermeineArbeitsstelle
+
+[ipv4]
+method=auto

@@ -1,0 +1,32 @@
+# S9+ phone-friendly GNOME defaults (user session, UID 1000).
+# Applied live 2026-10-28; configure.sh runs `dconf update` so rebuilds pick these up.
+# GNOME Shell 46 on Wayland; Ubuntu Dock (dash-to-dock schema) is already
+# dock-position='BOTTOM', dock-fixed=false, dash-max-icon-size=52 by default here.
+[org/gnome/desktop/interface]
+# No accidental Overview triggers (mouse hot corner) on a touch phone.
+enable-hot-corners=false
+
+[org/gnome/shell/extensions/dash-to-dock]
+# Dock hidden at all times; reveal with edge swipe from the bottom.
+autohide=true
+intellihide=false
+# Single tap on a running app icon: switch to it, tap again: overview.
+click-action='minimize-or-overview'
+
+[org/gnome/settings-daemon/plugins/power]
+# 2026-10-28: 'blank' does not exist in gsd 46, and this rootfs' systemd-logind
+# lacks sleep D-Bus properties ("Unknown property CanSuspend") so gsd falls
+# back to the end-session dialog for 'suspend'. The phone behaviour comes from
+# the s9p-power-button user service (from agcarbajo's port fork): short press
+# locks and turns the screen off, long press opens the power off dialog.
+# GNOME's own power button action must stay 'nothing'.
+power-button-action='nothing'
+
+[org/gnome/desktop/session]
+# Screen blank after 5 minutes of inactivity.
+idle-delay=uint32 300
+
+[org/gnome/desktop/screensaver]
+# Only ask for the password after 5 minutes of screen-off: a quick button
+# unlock is password-free, like a phone's lock screen.
+lock-delay=uint32 300

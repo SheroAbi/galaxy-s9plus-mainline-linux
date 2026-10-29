@@ -1,0 +1,8 @@
+#!/bin/sh
+# Set the notification LED default color (blue). multi_intensity is volatile
+# and resets to 0 0 0 (black = invisible) on every boot.
+D=/sys/class/leds/rgb:status
+[ -d "$D" ] || exit 0
+echo '0 0 255' > "$D/multi_intensity" 2>/dev/null || true
+echo 0 > "$D/brightness" 2>/dev/null || true
+exit 0

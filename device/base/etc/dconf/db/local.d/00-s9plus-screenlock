@@ -1,0 +1,5 @@
+[org/gnome/desktop/screensaver]
+# 2026-10-28: no lock screen password — the lock screen (and a quick screen
+# off via the power button) no longer asks for the password, like a phone
+# used by a single person. The Unix password stays for SSH and sudo.
+lock-enabled=false

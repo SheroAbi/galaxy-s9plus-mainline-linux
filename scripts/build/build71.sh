@@ -102,6 +102,19 @@ export LC_ALL=C ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
 if [ ! -f out/.config ] || [ -n "${FRESH_CONFIG:-}" ]; then
 	make -s O=out defconfig
 fi
+# The strip dance below only names what it turns off. This phone's platform
+# drivers (SERIAL_SAMSUNG, I2C_S3C2410, SPI_S3C64XX, MFD_EXYNOS_LPASS,
+# MFD_SEC_ACPM, EXYNOS_ACPM_PROTOCOL, ARM_SCMI_PROTOCOL, EXYNOS_THERMAL...)
+# are in no loop: they were added to the shared build tree by hand across
+# earlier sessions. A foreign .config (another port's build over the shared
+# tree) silently loses them - no serial (BT UART), no I2C codec, no LPASS,
+# no PMIC rails: audio on dummy, no Bluetooth. Pin the stable config before
+# the loops run; the loops below re-apply this port's own options on top.
+test -f "$PROJ/scripts/build/kernel.config.stable" || {
+  echo "missing scripts/build/kernel.config.stable - capture out/.config from a known-good build first"
+  exit 1
+}
+install -m644 "$PROJ/scripts/build/kernel.config.stable" out/.config
 cfg() { ./scripts/config --file out/.config "$@"; }
 
 # arm64 defconfig is a distro kernel for four dozen SoC families; the Image it
@@ -119,6 +132,11 @@ done
 # tree then builds a different kernel than one whose .config went through a
 # build before.
 make -s O=out olddefconfig
+# Guard: the platform drivers this phone needs must survive the strip dance;
+# a silently lost one costs serial/I2C/BT/audio in the image.
+for sym in SERIAL_SAMSUNG I2C_S3C2410 SPI_S3C64XX ARM_SCMI_PROTOCOL EXYNOS_THERMAL MFD_EXYNOS_LPASS MFD_SEC_ACPM REGULATOR_ARM_SCMI; do
+  grep -q "^CONFIG_${sym}=" out/.config || { echo "config guard: CONFIG_${sym} lost"; exit 1; }
+done
 
 cfg --enable BLK_DEV_INITRD
 cfg --set-str INITRAMFS_SOURCE "$RAMFS"

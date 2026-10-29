@@ -1,0 +1,4 @@
+[org/gnome/desktop/a11y/applications]
+# Same magnifier lock for the GDM login screen (greeter), so the zoom cannot
+# be enabled by accident there either.
+screen-magnifier-enabled=false

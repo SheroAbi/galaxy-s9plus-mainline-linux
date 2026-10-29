@@ -9,11 +9,12 @@ autoconnect-retries=0
 [ethernet]
 
 [ipv4]
-# DHCP if the PC shares its connection, plus a fixed address so the phone stays
-# reachable at 172.16.42.2 even when nothing answers DHCP.
-method=auto
-may-fail=true
-dhcp-timeout=15
+# Fixed address (manual). The PC side has a static 172.16.42.1 and runs no
+# DHCP server, so method=auto (DHCP with the address as fallback) looped
+# forever: ip-config-unavailable -> disconnect -> auto-activate every ~15 s,
+# spamming "network error" notifications on the phone. PC and phone are a
+# fixed pair, so manual is the correct mode.
+method=manual
 address1=172.16.42.2/24
 
 [ipv6]
